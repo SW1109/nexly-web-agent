@@ -3,7 +3,7 @@ import { parseEnv } from 'node:util';
 import { access, readFile, stat, mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir, tmpdir, platform } from 'node:os';
-import { join, dirname, resolve, isAbsolute, delimiter } from 'node:path';
+import { join, dirname, resolve, isAbsolute, delimiter, extname } from 'node:path';
 import { PROVIDERS, ANSWER_SCHEMA, buildPrompt, parseAnswer, validateQuestion } from '../extension/lib/contracts.js';
 
 export const CONFIG_PATH = join(homedir(), '.nexly-web-agent', 'config.json');
@@ -39,16 +39,34 @@ async function commandCandidates(name, config) {
     if (!isAbsolute(config.cliPaths[name])) throw new Error('CLI 自定义路径必须是绝对路径');
     return [config.cliPaths[name]];
   }
-  const dirs = [...(process.env.PATH || '').split(delimiter), join(homedir(), '.local/bin'), join(homedir(), '.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
-  try { const versions = (await readdir(join(homedir(), '.nvm/versions/node'))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); for (const version of versions) dirs.push(join(homedir(), '.nvm/versions/node', version, 'bin')); } catch {}
+  const windows = platform() === 'win32';
+  const pathKey = windows ? Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') : 'PATH';
+  const dirs = [...(process.env[pathKey] || '').split(delimiter).map((dir) => windows ? dir.replace(/^"(.*)"$/, '$1') : dir), join(homedir(), '.local/bin'), join(homedir(), '.npm-global/bin')];
+  if (windows) {
+    dirs.push(dirname(process.execPath), join(process.env.APPDATA || join(homedir(), 'AppData/Roaming'), 'npm'));
+    if (name === 'codex') {
+      const appBin = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData/Local'), 'OpenAI/Codex/bin');
+      dirs.push(appBin);
+      try {
+        const versions = await Promise.all((await readdir(appBin, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map(async (entry) => {
+          const dir = join(appBin, entry.name);
+          return { dir, modified: (await stat(join(dir, 'codex.exe')).catch(() => null))?.mtimeMs || 0 };
+        }));
+        dirs.push(...versions.filter(({ modified }) => modified).sort((a, b) => b.modified - a.modified || b.dir.localeCompare(a.dir)).map(({ dir }) => dir));
+      } catch {}
+    }
+  } else {
+    dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin');
+    try { const versions = (await readdir(join(homedir(), '.nvm/versions/node'))).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); for (const version of versions) dirs.push(join(homedir(), '.nvm/versions/node', version, 'bin')); } catch {}
+  }
   if (name === 'codex' && platform() === 'darwin') dirs.push('/Applications/ChatGPT.app/Contents/Resources', '/Applications/Codex.app/Contents/Resources');
-  return [...new Set(dirs.filter(Boolean))].map((dir) => join(dir, name + (platform() === 'win32' ? '.cmd' : '')));
+  return [...new Set(dirs.filter(Boolean))].flatMap((dir) => (windows ? ['.exe', '.com', '.cmd', '.bat'] : ['']).map((suffix) => join(dir, name + suffix)));
 }
 export async function resolveCommand(name, config) {
   if (!PROVIDERS.includes(name)) throw new Error('不支持的 CLI');
   config ??= await readLocalConfig();
   for (const candidate of await commandCandidates(name, config)) {
-    try { await access(candidate, constants.X_OK); return resolve(candidate); } catch {}
+    try { await access(candidate, constants.X_OK); if ((await stat(candidate)).isFile()) return resolve(candidate); } catch {}
   }
   throw new Error(`找不到 ${name} CLI，请先安装并在终端完成登录`);
 }
@@ -56,15 +74,54 @@ export async function configMetadata(provider) {
   const files = provider === 'codex' ? [join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml')] : provider === 'claude' ? [join(homedir(), '.claude/settings.json')] : [join(homedir(), '.gemini/settings.json'), join(homedir(), '.gemini/.env')];
   return Promise.all(files.map(async (file) => { try { const info = await stat(file); return { label: file.replace(homedir(), '~'), exists: true, updatedAt: info.mtime.toISOString() }; } catch { return { label: file.replace(homedir(), '~'), exists: false, updatedAt: null }; } }));
 }
-export function runProcess(command, args, { cwd, stdin = '', signal, timeoutMs = 180000, env = childEnvironment(), maxBytes = 2 * 1024 * 1024 } = {}) {
+async function processCommand(command, args) {
+  if (platform() !== 'win32') return { command, args };
+  if (/^\.(?:[cm]?js)$/i.test(extname(command))) return { command: process.execPath, args: [command, ...args] };
+  if (!/\.(?:cmd|bat)$/i.test(command)) return { command, args };
+  // Standard npm shims launch one Node entry with %*. Run that entry directly:
+  // cmd.exe would expand percent variables and reinterpret JSON or shell metacharacters.
+  const shim = await readFile(command, 'utf8');
+  const invocation = /(?:"%_prog%"|"%(?:~dp0|dp0%)[\\/]node\.exe"|\bnode(?:\.exe)?)\s+"((?:%~dp0|%dp0%)[\\/][^"\r\n]+)"\s+%\*\s*$/gim;
+  for (const match of shim.matchAll(invocation)) {
+    const relative = match[1].replace(/^(?:%~dp0|%dp0%)[\\/]/i, '');
+    const entry = resolve(dirname(command), relative);
+    if ((await stat(entry).catch(() => null))?.isFile()) return { command: process.execPath, args: [entry, ...args] };
+  }
+  throw new Error('Windows CLI 批处理不是可识别的标准 npm Node 启动脚本，请配置 CLI 的 .exe 或 JavaScript 入口绝对路径');
+}
+function windowsProcessTree(child) {
+  if (!child.pid) return Promise.resolve();
+  return new Promise((done) => {
+    const killer = spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32/taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', shell: false });
+    let settled = false;
+    const finish = (failed = false) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (failed) { try { child.kill(); } catch {} }
+      done();
+    };
+    const timer = setTimeout(() => { try { killer.kill(); } catch {} finish(true); }, 5000);
+    killer.once('error', () => finish(true));
+    killer.once('close', (code) => finish(code !== 0));
+  });
+}
+export async function runProcess(command, args, { cwd, stdin = '', signal, timeoutMs = 180000, env = childEnvironment(), maxBytes = 2 * 1024 * 1024 } = {}) {
+  if (signal?.aborted) throw new Error('任务已停止');
+  const executable = await processCommand(command, args);
   return new Promise((resolveResult, reject) => {
     if (signal?.aborted) { reject(new Error('任务已停止')); return; }
-    const child = spawn(command, args, { cwd, env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${env.PATH || ''}` }, stdio: ['pipe', 'pipe', 'pipe'], shell: false, detached: platform() !== 'win32' });
-    let stdout = '', stderr = '', bytes = 0, finished = false, terminationReason = null, killTimer;
+    const childEnv = { ...env };
+    const pathKeys = Object.keys(childEnv).filter((key) => platform() === 'win32' ? key.toUpperCase() === 'PATH' : key === 'PATH');
+    const existingPath = pathKeys.map((key) => childEnv[key]).filter(Boolean).join(delimiter);
+    for (const key of pathKeys) delete childEnv[key];
+    childEnv.PATH = `${dirname(process.execPath)}${delimiter}${existingPath}`;
+    const child = spawn(executable.command, executable.args, { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true, detached: platform() !== 'win32' });
+    let stdout = '', stderr = '', bytes = 0, finished = false, terminationReason = null, killTimer, terminationPromise;
     const terminate = (reason) => {
       if (finished || terminationReason) return;
       terminationReason = reason;
-      const kill = (sig) => { try { if (platform() === 'win32') child.kill(sig); else process.kill(-child.pid, sig); } catch {} };
+      if (platform() === 'win32') { terminationPromise = windowsProcessTree(child); return; }
+      const kill = (sig) => { try { process.kill(-child.pid, sig); } catch {} };
       kill('SIGTERM'); killTimer = setTimeout(() => kill('SIGKILL'), 1500); killTimer.unref();
     };
     const timer = setTimeout(() => terminate('CLI 请求超时，任务已停止'), timeoutMs);
@@ -75,7 +132,7 @@ export function runProcess(command, args, { cwd, stdin = '', signal, timeoutMs =
     child.stderr.on('data', (chunk) => { bytes += Buffer.byteLength(chunk); if (bytes > maxBytes) terminate('CLI 输出超过处理范围'); else stderr = (stderr + chunk).slice(-16000); });
     child.stdin.on('error', () => {});
     child.on('error', () => { cleanup(); reject(new Error('无法启动 CLI，请检查命令路径与运行权限')); });
-    child.on('close', (code) => { cleanup(); if (terminationReason) reject(new Error(terminationReason)); else if (code !== 0) reject(new Error(cliFailure(code, stderr, stdout))); else resolveResult({ stdout, stderr }); });
+    child.on('close', async (code) => { await terminationPromise; cleanup(); if (terminationReason) reject(new Error(terminationReason)); else if (code !== 0) reject(new Error(cliFailure(code, stderr, stdout))); else resolveResult({ stdout, stderr }); });
     child.stdin.end(stdin);
   });
 }

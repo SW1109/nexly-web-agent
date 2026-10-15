@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cliFailure, childEnvironment, redact, claudeArguments, codexArguments, geminiArguments, decodeCliResult, runProcess } from '../bridge/cli.mjs';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir, platform } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { cliFailure, childEnvironment, redact, claudeArguments, codexArguments, geminiArguments, decodeCliResult, runProcess, resolveCommand } from '../bridge/cli.mjs';
 import { ANSWER_SCHEMA } from '../extension/lib/contracts.js';
 import { single, correct } from './data.mjs';
 
@@ -36,8 +40,76 @@ test('redacts bearer, conventional keys and JSON-shaped secret values', () => {
 test('spawns without a shell and keeps UTF-8 intact across stdout chunks', async () => {
   const program = `const b=Buffer.from('中文🧩');process.stdout.write(b.subarray(0,2));setTimeout(()=>process.stdout.write(b.subarray(2)),15);`;
   assert.equal((await runProcess(process.execPath, ['-e', program])).stdout, '中文🧩');
-  const literal = '; echo $HOME';
-  assert.equal((await runProcess(process.execPath, ['-e', 'process.stdout.write(process.argv[1])', literal])).stdout, literal);
+  const literals = ['', '; echo $HOME', '& echo unexpected', '%PATH%', '!PATH!', '中文🧩', '{"quoted":"a&b"}', '"quoted"', 'trailing\\', 'line1\nline2'];
+  assert.deepEqual(JSON.parse((await runProcess(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', ...literals])).stdout), literals);
+});
+
+test('Windows discovers native executables, npm command shims and batch shims', { skip: platform() !== 'win32' }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nexly-path-'));
+  const previous = process.env.PATH;
+  process.env.PATH = dir;
+  t.after(async () => { process.env.PATH = previous; await rm(dir, { recursive: true, force: true }); });
+  for (const suffix of ['.exe', '.cmd', '.bat']) await writeFile(join(dir, `claude${suffix}`), '');
+  assert.equal(await resolveCommand('claude', {}), join(dir, 'claude.exe'));
+  await rm(join(dir, 'claude.exe'));
+  await mkdir(join(dir, 'claude.exe'));
+  assert.equal(await resolveCommand('claude', {}), join(dir, 'claude.cmd'));
+  await rm(join(dir, 'claude.cmd'));
+  assert.equal(await resolveCommand('claude', {}), join(dir, 'claude.bat'));
+});
+
+test('Windows discovers the Codex desktop versioned executable without PATH changes', { skip: platform() !== 'win32' }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nexly-codex-'));
+  const previousLocal = process.env.LOCALAPPDATA, previousPath = process.env.PATH;
+  process.env.LOCALAPPDATA = dir; process.env.PATH = dir;
+  t.after(async () => { process.env.LOCALAPPDATA = previousLocal; process.env.PATH = previousPath; await rm(dir, { recursive: true, force: true }); });
+  const executable = join(dir, 'OpenAI/Codex/bin/version-hash/codex.exe');
+  await mkdir(join(executable, '..'), { recursive: true });
+  await writeFile(executable, '');
+  assert.equal(await resolveCommand('codex', {}), executable);
+});
+
+test('Windows npm shims preserve literal arguments and stdin without a shell', { skip: platform() !== 'win32' }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nexly shim & '));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(join(dir, 'node_modules/mock-cli'), { recursive: true });
+  await writeFile(join(dir, 'node_modules/mock-cli/entry.cjs'), `let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({args:process.argv.slice(2),input})));`);
+  const args = ['', 'with spaces', '中文🧩', '& echo unsafe', '| more', '< > ^', '%PATH%', '!PATH!', '{"model":"a&b","quote":"\\\""}', '"quoted"', 'trailing\\', 'line1\nline2'];
+  const stdin = '题目内容\n%PATH% & !literal!';
+  for (const [suffix, invocation] of [
+    ['.cmd', 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\mock-cli\\entry.cjs" %*'],
+    ['.bat', '@"%~dp0\\node.exe" "%~dp0\\node_modules\\mock-cli\\entry.cjs" %*']
+  ]) {
+    const shim = join(dir, `mock${suffix}`);
+    await writeFile(shim, `@ECHO off\r\n${invocation}\r\n`);
+    assert.deepEqual(JSON.parse((await runProcess(shim, args, { stdin })).stdout), { args, input: stdin });
+  }
+  const customBatch = join(dir, 'custom.cmd');
+  await writeFile(customBatch, '@echo off\r\necho %*\r\n');
+  await assert.rejects(runProcess(customBatch, ['& echo unsafe']), /标准 npm/);
+  assert.deepEqual(JSON.parse((await runProcess(join(dir, 'node_modules/mock-cli/entry.cjs'), args, { stdin })).stdout), { args, input: stdin });
+});
+
+test('Windows cancellation also terminates CLI descendants', { skip: platform() !== 'win32' }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nexly-process-tree-'));
+  const pidFile = join(dir, 'child.pid');
+  let descendant;
+  t.after(async () => {
+    if (descendant) spawnSync(join(process.env.SystemRoot || 'C:\\Windows', 'System32/taskkill.exe'), ['/PID', String(descendant), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    await rm(dir, { recursive: true, force: true });
+  });
+  const program = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});writeFileSync(process.argv[1],String(child.pid));setInterval(()=>{},1000);`;
+  const controller = new AbortController();
+  const task = runProcess(process.execPath, ['-e', program, pidFile], { signal: controller.signal });
+  const rejected = assert.rejects(task, /停止/);
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { descendant = Number(await readFile(pidFile, 'utf8')); break; } catch { await new Promise((done) => setTimeout(done, 20)); }
+  }
+  controller.abort();
+  await rejected;
+  assert.ok(descendant, 'CLI should have spawned a descendant before cancellation');
+  assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+  descendant = null;
 });
 test('cancels or times out a child process and limits stdout', async () => {
   const controller = new AbortController();

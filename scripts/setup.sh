@@ -9,7 +9,4 @@ for candidate in "$(command -v node || true)" "$HOME"/.nvm/versions/node/*/bin/n
   fi
 done
 if [ -z "$node_bin" ]; then echo '请先安装 Node.js 22 或更高版本；脚本不会改动你的默认 Node。' >&2; exit 1; fi
-"$node_bin" "$project_dir/scripts/check.mjs"
-"$node_bin" "$project_dir/scripts/build.mjs"
-"$node_bin" "$project_dir/scripts/install-native.mjs"
-"$node_bin" "$project_dir/scripts/doctor.mjs"
+"$node_bin" "$project_dir/scripts/setup.mjs"

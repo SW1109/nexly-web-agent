@@ -9,17 +9,21 @@ Chrome 侧栏练习助手，通过 Native Messaging 调用本机 Codex CLI、Cla
 
 ## 安装与启动
 
-要求：Chrome 120+、Node.js 22+，以及至少一个已在终端配置成功的 CLI。安装脚本支持 macOS / Linux（Google Chrome）；Windows 暂不支持自动注册。
+要求：Chrome 120+、Node.js 22+，以及至少一个已在终端配置成功的 CLI。安装脚本支持 Windows / macOS / Linux（Google Chrome）。
 
 首次使用先下载源码，再运行安装脚本：
 
 ```bash
 git clone https://github.com/SW1109/nexly-web-agent.git
 cd nexly-web-agent
-bash scripts/setup.sh
+node scripts/setup.mjs
 ```
 
-脚本会寻找已经安装的 Node.js 22+，检查代码、生成扩展、注册本项目的 Native Messaging 主机并检查 CLI。不会安装依赖、改默认 Node、修改 ccSwitch 或替换 CLI 的登录配置。项目本身没有 npm 依赖，无需 `npm install`。
+Windows 在 PowerShell 中运行上述命令即可，无需 WSL 或 Git Bash。也可运行 `npm.cmd run setup`。macOS / Linux 如需自动寻找已经安装的 Node.js 22+，可继续使用 `bash scripts/setup.sh`。
+
+安装流程会检查 Node.js 22+、检查代码、生成扩展、注册本项目的 Native Messaging 主机并检查 CLI。不会安装依赖、改默认 Node、修改 ccSwitch 或替换 CLI 的登录配置。项目本身没有 npm 依赖，无需 `npm install`。
+
+Windows 将启动器和主机清单写入 `%USERPROFILE%\.nexly-web-agent`，并在当前用户的 `HKCU\Software\Google\Chrome\NativeMessagingHosts` 注册本项目，无需管理员权限。CLI 支持原生 `.exe` 和标准 npm Node.js `.cmd` / `.bat` 启动器；自定义批处理请改用实际可执行文件。安装器和卸载器遇到不同来源的同名注册时会停止，保留原配置。
 
 然后在 Chrome 地址栏输入 `chrome://extensions`：
 
@@ -132,7 +136,7 @@ npm run doctor
 - `doctor`：检测本地桥、CLI 路径和配置状态，不代表模型账号、额度或服务可用。
 - 只预览安装路径：`node scripts/install-native.mjs --dry-run`。
 - 修改扩展后：先 build，再在 `chrome://extensions` 点击扩展的刷新按钮。
-- 迁移项目位置后：重新运行 `bash scripts/setup.sh` 更新本地桥入口路径。
+- 迁移项目位置后：重新运行 `node scripts/setup.mjs` 更新本地桥入口路径。
 
 目录：`extension/` 是 Manifest V3 源码，`bridge/` 是 CLI 与 Native Messaging，`scripts/` 是安装构建工具，`tests/` 是自动化回归测试，`.github/` 包含 Bug 反馈表单与入口配置。
 
