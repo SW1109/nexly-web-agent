@@ -191,3 +191,15 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   configure(appearance, initialPosition); paint(initialState);
   return { ok: true };
 }
+
+/** 关闭“自动启用页内组件”后移除已注入的悬浮组件，不触碰网页自身节点。 */
+export function removePageControls() {
+  const previous = globalThis.__nexlyPageControls;
+  try {
+    if (previous?.cleanup) previous.cleanup();
+    else if (previous?.listener) chrome.runtime.onMessage.removeListener(previous.listener);
+  } catch {}
+  document.querySelector('[data-nexly-controls]')?.remove();
+  globalThis.__nexlyPageControls = null;
+  return { ok: true, removed: Boolean(previous) };
+}

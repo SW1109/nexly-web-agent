@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateQuestion, validateAnswer, parseAnswer, buildPrompt, safePageUrl, LIMITS } from '../extension/lib/contracts.js';
+import { validateQuestion, validateAnswer, parseAnswer, buildPrompt, safePageUrl, shouldRunSamples, LIMITS } from '../extension/lib/contracts.js';
 import { single, correct, codeQuestion } from './data.mjs';
 
 test('only the requested question fields and URL path leave the browser', () => {
@@ -55,4 +55,15 @@ test('reject duplicate identifiers, malformed types and nonfinite confidence', (
   assert.throws(() => validateQuestion({ ...single, options: [single.options[0], single.options[0]] }));
   assert.throws(() => validateQuestion({ ...single, type: 'form-submit' }));
   for (const confidence of [NaN, Infinity, -1, 1.1, '1']) assert.throws(() => validateAnswer({ ...correct, confidence }, single));
+});
+test('samples run only for code questions with a unique page entry', () => {
+  const entry = { available: true, reason: '', label: '执行验证', count: 1, disabled: false };
+  assert.equal(shouldRunSamples(codeQuestion, entry), true);
+  assert.equal(shouldRunSamples(codeQuestion, { ...entry, available: false, reason: 'missing', count: 0 }), false);
+  assert.equal(shouldRunSamples(codeQuestion, { ...entry, available: false, reason: 'ambiguous', count: 2 }), false);
+  assert.equal(shouldRunSamples(codeQuestion, null), false);
+  assert.equal(shouldRunSamples(null, entry), false);
+  for (const type of ['single', 'multiple', 'judge', 'blank', 'text']) {
+    assert.equal(shouldRunSamples({ ...single, type }, entry), false, `${type} 不应执行页面样例`);
+  }
 });

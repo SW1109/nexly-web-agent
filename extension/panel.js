@@ -69,10 +69,11 @@ async function saveSettings() {
   validateInput($('count'), '每批题数应为 1～20 的整数');
   const pacing = validatePacing(raw), provider = $('provider').value, count = Number($('count').value), run = $('run-after-fill').checked, runInBackground = $('background-run').checked;
   const controlsAppearance = validateAppearance({ opacity: Number($('controls-opacity').value) });
+  const autoControls = $('auto-controls').checked;
   if (!names[provider]) throw new Error('请选择受支持的本地 CLI');
-  await chrome.storage.local.set({ pacing, provider, count, runAfterFill: run, runInBackground, controlsAppearance });
+  await chrome.storage.local.set({ pacing, provider, count, runAfterFill: run, runInBackground, controlsAppearance, autoControls });
   settingsDirty = false; updateSummary();
-  settingsStatus('已保存。外观立即生效，任务配置在下次开始时生效。');
+  settingsStatus('已保存。外观与页内组件开关立即生效，任务配置在下次开始时生效。');
   return { pacing, provider, count, run, runInBackground };
 }
 function showError(message) { $('error').textContent = message || ''; $('error').hidden = !message; }
@@ -101,7 +102,7 @@ function renderLog(entries) {
 function render(state) {
   currentState = state;
   const busy = state.busy || localBusy;
-  for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter']) $(id).disabled = busy;
+  for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter', 'auto-controls']) $(id).disabled = busy;
   $('save-settings').disabled = settingsSaving || localBusy;
   for (const input of pacingInputs) input.disabled = busy;
   $('solve').disabled ||= !connection;
@@ -122,7 +123,14 @@ function render(state) {
   }
   $('answer-section').hidden = !state.answer;
   $('fill').disabled ||= !state.answer;
-  $('run').disabled ||= state.phase !== 'filled' || state.question?.type !== 'code';
+  // 只有编程题且页面报告了唯一执行入口时才展示“执行样例”，选择题不出现这个入口。
+  const runAvailable = state.question?.type === 'code' && state.run?.available === true;
+  $('run').hidden = !runAvailable;
+  $('run').disabled ||= state.phase !== 'filled' || !runAvailable;
+  $('run').title = !state.question || state.question.type !== 'code' ? '只有编程题需要执行样例'
+    : state.run?.available !== true ? (state.run?.reason === 'ambiguous' ? '页面有多个候选执行入口，已跳过执行样例' : '页面没有唯一的执行入口，已跳过执行样例')
+    : state.phase !== 'filled' ? '填写完成后可执行样例'
+    : '点击页面执行入口并等待新结果';
   if (state.answer) {
     const answer = state.answer;
     $('confidence').textContent = `${Math.round(answer.confidence * 100)}% 置信度`;
@@ -214,11 +222,12 @@ $('permission').addEventListener('click', async () => {
 chrome.runtime.onMessage.addListener((message) => { if (message.type === 'state') render(message.state); });
 try {
   showPacing(DEFAULT_PACING); showAppearance(DEFAULT_APPEARANCE);
-  const { provider, count, runAfterFill, pacing, runInBackground, controlsAppearance } = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'controlsAppearance']);
+  const { provider, count, runAfterFill, pacing, runInBackground, controlsAppearance, autoControls } = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'controlsAppearance', 'autoControls']);
   if (names[provider]) $('provider').value = provider;
   if (Number.isInteger(count) && count >= 1 && count <= 20) $('count').value = count;
   $('run-after-fill').checked = runAfterFill === true;
   $('background-run').checked = runInBackground !== false;
+  $('auto-controls').checked = autoControls !== false;
   let pacingError = '';
   try { showPacing(validatePacing(pacing)); }
   catch (error) { showPacing(DEFAULT_PACING); pacingError = `已保存的节奏配置无效，已显示默认值；请检查后保存。${error.message}`; }

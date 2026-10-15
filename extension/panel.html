@@ -41,7 +41,7 @@
     <h2 id="batch-title">连续作答</h2>
     <div class="inline-field"><label for="count">每批题数 <span class="caption">1～20 题</span></label><input id="count" type="number" min="1" max="20" step="1" value="1" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
     <label class="checkbox"><input id="background-run" type="checkbox" checked><span>切换标签后继续作答<small>继续操作启动任务时的练习页</small></span></label>
-    <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>仅运行样例，不自动提交答案</small></span></label>
+    <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>仅运行样例，不自动提交答案；页面没有唯一执行入口时自动跳过</small></span></label>
   </section>
   <section class="section" aria-labelledby="pacing-title">
     <div class="section-heading"><h2 id="pacing-title">操作节奏</h2><button id="reset-settings" class="quiet" type="button">恢复默认节奏</button></div>
@@ -53,10 +53,11 @@
   </section>
   <section class="section" aria-labelledby="appearance-title">
     <h2 id="appearance-title">页内组件</h2>
+    <label class="checkbox"><input id="auto-controls" type="checkbox" checked><span>打开练习页时自动启用页内组件<small>默认开启；只在已授权的练习站点注入，不必先打开侧栏</small></span></label>
     <div class="appearance-preview" aria-hidden="true"><div id="opacity-preview"><img src="icons/icon-32.png" alt=""></div><div><strong>轻触即用</strong><p>悬浮展开 · 离开收起 · 拖动移动</p></div></div>
     <div class="range-label"><label for="controls-opacity">显示不透明度</label><output id="opacity-value" for="controls-opacity">90%</output></div><input id="controls-opacity" type="range" aria-describedby="opacity-hint"><p id="opacity-hint" class="caption"></p>
     <button id="reset-position" class="quiet" type="button">将组件移回右下角</button><p id="position-status" class="caption" role="status"></p>
-    <p class="caption">拖动图标或展开后的标题栏可移动位置。键盘聚焦图标可展开，Alt + 方向键微调，Esc 收起。</p>
+    <p class="caption">拖动图标或展开后的标题栏可移动位置。键盘聚焦图标可展开，Alt + 方向键微调，Esc 收起。关闭上方开关会立即移除已注入的组件，新打开的练习页也不再自动注入。</p>
   </section>
   <div class="settings-footer"><p id="settings-status" class="caption" role="status">任务配置在下一次任务生效。</p><button id="save-settings" class="primary wide" type="button">保存设置</button></div>
 </div>

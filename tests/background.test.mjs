@@ -9,7 +9,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   let saved = null, question = structuredClone(single), active = true, focused = true, frameFocused = true, writes = 0, fillResponder = null;
   const shortcut = event(), navigated = event(), storageChanged = event();
   const localSettings = {}, appearanceMessages = [];
-  let navigationQuestion = null, navigationClicks = 0, editorReadyAt = 0, navigationEditorDelay = 0, hiddenFrame = false;
+  let navigationQuestion = null, navigationQueue = [], navigationClicks = 0, editorReadyAt = 0, navigationEditorDelay = 0, hiddenFrame = false, runClicks = 0, runAvailable = true, runFailure = null, emptyInjection = false;
   const outbound = [], commands = event(), messages = event(), disconnected = event(), activated = event(), focus = event();
   const port = { onMessage: messages, onDisconnect: disconnected, postMessage(message) { outbound.push(message); if (message.action === 'cancel') queueMicrotask(() => { messages.emit({ requestId: message.targetId, type: 'error', error: '任务已停止' }); messages.emit({ requestId: message.requestId, type: 'result', data: { canceled: true } }); }); } };
   globalThis.chrome = {
@@ -28,18 +28,18 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
         if (value === undefined) throw new TypeError(`Error at property 'args': Error at index ${index}: Value is unserializable.`);
       }
       const [action, payload] = JSON.parse(JSON.stringify(args));
-      if (action === 'find') return [{ result: { ok: true, candidates: navigationQuestion && target.frameIds?.[0] === 0 ? [{ key: 'random', label: '随机一题', rank: 1, random: true, disabled: false }] : [] } }];
-      if (action === 'click') { assert.equal(target.frameIds[0], 0); question = structuredClone(navigationQuestion); navigationQuestion = null; navigationClicks++; editorReadyAt = Date.now() + navigationEditorDelay; return [{ result: { ok: true, clicked: true, navigationLabel: '随机一题', random: true } }]; }
+      if (action === 'find') return [{ result: { ok: true, candidates: (navigationQuestion || navigationQueue.length) && target.frameIds?.[0] === 0 ? [{ key: 'random', label: '随机一题', rank: 1, random: true, disabled: false }] : [] } }];
+      if (action === 'click') { assert.equal(target.frameIds[0], 0); question = structuredClone(navigationQueue.length ? navigationQueue.shift() : navigationQuestion); navigationQuestion = null; navigationClicks++; editorReadyAt = Date.now() + navigationEditorDelay; return [{ result: { ok: true, clicked: true, navigationLabel: '随机一题', random: true } }]; }
       if (action === 'focusState') return [{ result: { ok: true, visible: true, focused: frameFocused } }];
       if (action === 'read') {
-        const result = { frameId: 4, result: { ok: true, question: structuredClone(question), editor: { supported: Date.now() >= editorReadyAt, error: Date.now() < editorReadyAt ? '编辑器正在初始化' : '' }, visible: true } };
+        const result = { frameId: 4, result: { ok: true, question: structuredClone(question), editor: { supported: Date.now() >= editorReadyAt, error: Date.now() < editorReadyAt ? '编辑器正在初始化' : '' }, run: question.type === 'code' ? { available: runAvailable, reason: runAvailable ? '' : 'missing', label: runAvailable ? '执行验证' : '', count: runAvailable ? 1 : 0, disabled: false } : { available: false, reason: 'not-code', label: '', count: 0, disabled: false }, visible: true } };
         if (hiddenFrame && target.allFrames) return [result,
           { frameId: 0, result: { ok: false, frame: { shown: true, children: [{ url: single.pageUrl, shown: true }, { url: single.pageUrl + '?cached', shown: false }] } } },
           { frameId: 7, result: { ...result.result, question: { ...single, questionId: 'hidden-old-question' }, frame: { shown: true, url: single.pageUrl + '?cached', children: [] } } }];
         return [result];
       }
-      if (action === 'fillStep') { assert.equal(payload.questionId, question.questionId); if (fillResponder) return fillResponder(payload); writes++; return [{ result: { ok: true, verified: true, done: true, detail: '回读通过' } }]; }
-      if (action === 'run') return [{ result: { ok: true, clicked: true, previousResult: '' } }];
+      if (action === 'fillStep') { if (emptyInjection) return []; assert.equal(payload.questionId, question.questionId); if (fillResponder) return fillResponder(payload); writes++; return [{ result: { ok: true, verified: true, done: true, detail: '回读通过' } }]; }
+      if (action === 'run') { assert.equal(question.type, 'code', 'non-code question must never dispatch a run click'); runClicks++; if (runFailure) return [{ result: { ok: false, error: runFailure } }]; return [{ result: { ok: true, clicked: true, previousResult: '' } }]; }
       if (action === 'runStatus') return [{ result: { ok: true, loading: false, result: '通过 测试输出 FALSE 预期输出 FALSE' } }];
       throw new Error(`Unexpected page action: ${action}`);
     } }
@@ -132,8 +132,106 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   answer(request, { questionId: codeQuestion.questionId, type: 'code', choiceIds: [], code: 'console.log("FALSE");', explanation: '测试代码' });
   await until(() => saved.phase === 'awaitingManual');
   assert.equal(saved.busy, true); assert.equal(writes, 3);
+  assert.equal(runClicks, 1);
   assert.ok(saved.log.some((entry) => entry.text.includes('页面执行结果：通过')));
   await command('stop');
+
+  // 单选题即使开启了“填写后执行样例”，也只填写选项；不会派发页面的执行/验证点击。
+  question = structuredClone(single); offset = outbound.length;
+  const beforeSingleRun = writes, clicksBeforeSingle = runClicks;
+  await command('start', { provider: 'gemini', fill: true, run: true }); request = await nextSolve(offset);
+  answer(request); await until(() => !saved.busy);
+  assert.equal(saved.phase, 'filled', saved.error);
+  assert.equal(saved.question.type, 'single');
+  assert.equal(runClicks, clicksBeforeSingle);
+  assert.equal(writes, beforeSingleRun + 1);
+  assert.ok(saved.log.some((entry) => entry.text.includes('当前题目不是编程题，已跳过执行样例')));
+
+  // 侧栏“执行样例”对非编程题直接拒绝，同样不会派发页面点击。
+  const rejectedRun = await command('run');
+  assert.equal(rejectedRun.ok, false); assert.match(rejectedRun.error, /只有已写入的编程题/);
+  assert.equal(runClicks, clicksBeforeSingle);
+
+  // 编程题但页面没有唯一执行入口：跳过样例并进入人工提交流程，不把整批判成失败，也不退化去点提交。
+  runAvailable = false;
+  question = structuredClone(codeQuestion); offset = outbound.length;
+  await command('start', { provider: 'gemini', fill: true, run: true }); request = await nextSolve(offset);
+  answer(request, { questionId: codeQuestion.questionId, type: 'code', choiceIds: [], code: 'console.log("FALSE");' });
+  await until(() => saved.phase === 'awaitingManual');
+  assert.equal(runClicks, clicksBeforeSingle);
+  assert.equal(saved.error, '');
+  assert.ok(saved.log.some((entry) => entry.text.includes('没有唯一的“执行代码/执行验证”入口')));
+  await command('stop');
+  runAvailable = true;
+
+  // 编程题验证拿不到可验证结果时：跳过验证并自动换下一题，不中断整批任务。
+  question = structuredClone(codeQuestion);
+  navigationQuestion = { ...single, questionId: 'after-verify-failure', title: '验证失败后的下一题', stem: '单选题：验证失败后的下一题' };
+  offset = outbound.length;
+  const clicksBeforeVerifyFailure = runClicks, navBeforeVerifyFailure = navigationClicks;
+  runFailure = '执行入口没有返回结果';
+  await command('start', { provider: 'gemini', fill: true, run: true, count: 2 }); request = await nextSolve(offset);
+  const verifyFailureOffset = outbound.length; answer(request, { questionId: codeQuestion.questionId, type: 'code', choiceIds: [], code: 'console.log("FALSE");' });
+  request = await nextSolve(verifyFailureOffset);
+  assert.equal(request.question.questionId, 'after-verify-failure');
+  assert.equal(navigationClicks, navBeforeVerifyFailure + 1);
+  answer(request); await until(() => !saved.busy);
+  assert.equal(saved.completed, 2); assert.equal(saved.error, ''); assert.equal(saved.phase, 'filled');
+  assert.equal(runClicks, clicksBeforeVerifyFailure + 1, '验证失败只尝试一次，不会对下一题重复执行入口');
+  assert.ok(saved.log.some((entry) => entry.text.includes('已跳过验证并继续下一题')));
+  runFailure = null; navigationQuestion = null;
+
+  // 注入结果为空（frame/document 已重建）时给出可诊断的原因，而不是笼统的“没有返回可验证的操作结果”。
+  question = structuredClone(single); offset = outbound.length;
+  emptyInjection = true;
+  await command('start', { provider: 'gemini', fill: true }); request = await nextSolve(offset);
+  answer(request); await until(() => !saved.busy);
+  assert.match(saved.error, /题目区域已切换或刷新/);
+  assert.doesNotMatch(saved.error, /没有返回可验证的操作结果/);
+  emptyInjection = false;
+
+  // 页面拒绝写入时不空转：记录原因、跳到下一题继续本批，未作答的题留给人工核对。
+  question = structuredClone(single); navigationQuestion = { ...single, questionId: 'after-fill-failure', title: '写入失败后的下一题', stem: '单选题：写入失败后的下一题' };
+  offset = outbound.length;
+  let failFills = 1;
+  const fillFailure = () => Promise.resolve([{ result: { ok: false, error: '页面没有接受选项变更，请检查该站的选项控件' } }]);
+  const fillSuccess = () => Promise.resolve([{ result: { ok: true, done: true, verified: true, detail: '回读通过' } }]);
+  fillResponder = () => (failFills-- > 0 ? fillFailure() : fillSuccess());
+  const navBeforeFillSkip = navigationClicks;
+  await command('start', { provider: 'gemini', fill: true, count: 2 }); request = await nextSolve(offset);
+  const skipOffset = outbound.length; answer(request);
+  request = await nextSolve(skipOffset);
+  assert.equal(request.question.questionId, 'after-fill-failure');
+  assert.equal(navigationClicks, navBeforeFillSkip + 1);
+  answer(request); await until(() => !saved.busy);
+  assert.equal(saved.completed, 1); assert.equal(saved.error, '');
+  assert.ok(saved.log.some((entry) => entry.text.includes('已跳到下一题继续')));
+  assert.ok(saved.log.some((entry) => entry.text.includes('（页面操作：fillStep）')), '失败原因要带上出错的页面操作');
+  assert.ok(!saved.log.some((entry) => entry.text.includes('（页面操作：fillStep）（页面操作：fillStep）')), '操作名不能重复拼接');
+  fillResponder = null; navigationQuestion = null;
+
+  // 整批一题都没写进去时明确报错，不能让“跳过”看起来像填写成功。
+  question = structuredClone(single); offset = outbound.length;
+  fillResponder = fillFailure;
+  await command('start', { provider: 'gemini', fill: true, count: 1 }); request = await nextSolve(offset);
+  answer(request); await until(() => !saved.busy);
+  assert.equal(saved.completed, 0); assert.equal(saved.phase, 'error');
+  assert.match(saved.error, /本批没有题目写入成功/);
+  fillResponder = null;
+
+  // 连续多题写入失败（例如控件完全不接受点击）时停止，避免一路跳过整场考试。
+  question = structuredClone(single);
+  navigationQueue = ['flaky-1', 'flaky-2', 'flaky-3'].map((id) => ({ ...single, questionId: id, title: id, stem: `单选题：${id}` }));
+  offset = outbound.length;
+  const navBeforeCap = navigationClicks;
+  fillResponder = fillFailure;
+  await command('start', { provider: 'gemini', fill: true, count: 6 });
+  let cursor = offset;
+  for (let i = 0; i < 4; i++) { request = await nextSolve(cursor); cursor = outbound.length; answer(request); }
+  await until(() => !saved.busy);
+  assert.match(saved.error, /连续 4 题未能写入页面/);
+  assert.equal(navigationClicks, navBeforeCap + 3);
+  fillResponder = null; navigationQueue = [];
 
   // 延迟阶段也必须响应停止，不得在等待结束后补写答案。
   question = structuredClone(single); offset = outbound.length;
@@ -215,10 +313,10 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
 
   // 当前 frame 找不到按钮时，能在父 frame 的独立工具栏点击“随机一题”。
   question = structuredClone(single); navigationQuestion = { ...single, questionId: 'random-next', title: '随机题', stem: '单选题：随机得到的新题' };
-  offset = outbound.length; const beforeBatch = writes;
+  offset = outbound.length; const beforeBatch = writes, navBeforeBatch = navigationClicks;
   await command('start', { provider: 'gemini', count: 2 }); request = await nextSolve(offset);
   const secondOffset = outbound.length; answer(request);
-  request = await nextSolve(secondOffset); assert.equal(navigationClicks, 1); assert.equal(request.question.questionId, 'random-next');
+  request = await nextSolve(secondOffset); assert.equal(navigationClicks, navBeforeBatch + 1); assert.equal(request.question.questionId, 'random-next');
   answer(request); await until(() => !saved.busy); assert.equal(saved.completed, 2); assert.equal(writes, beforeBatch + 2);
 
   // 父级隐藏的旧 iframe 仍会报告 document visible，不能误认为另一道活动题。
