@@ -1,0 +1,16 @@
+import { readFile, unlink, rmdir } from 'node:fs/promises';
+import { homedir, platform } from 'node:os';
+import { join } from 'node:path';
+import { ROOT, extensionIdentity } from './project.mjs';
+import { HOST_NAME } from '../extension/lib/contracts.js';
+const ownRoot = join(homedir(), '.nexly-web-agent');
+const manifestRoot = platform() === 'darwin' ? join(homedir(), 'Library/Application Support/Google/Chrome/NativeMessagingHosts') : join(homedir(), '.config/google-chrome/NativeMessagingHosts');
+const manifestPath = join(manifestRoot, `${HOST_NAME}.json`);
+const installed = JSON.parse(await readFile(join(ownRoot, 'installation.json'), 'utf8'));
+const { id } = await extensionIdentity();
+if (installed.projectRoot !== ROOT || installed.extensionId !== id || installed.manifestPath !== manifestPath || installed.launcher !== join(ownRoot, 'native-host.sh')) throw new Error('安装信息与当前项目不匹配，未删除任何文件');
+const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+if (manifest.name !== HOST_NAME || manifest.path !== installed.launcher || manifest.allowed_origins?.[0] !== `chrome-extension://${id}/`) throw new Error('Native host 配置已变化，未删除');
+for (const file of [manifestPath, installed.launcher, join(ownRoot, 'installation.json')]) await unlink(file);
+await rmdir(ownRoot).catch(() => {});
+console.log('已卸载本项目 native host。保留 CLI、ccSwitch、用户自定义 config.json 和项目源码。扩展本身请在 Chrome 中移除。');

@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "Nexly 网页练习助手",
+  "version": "0.3.0",
+  "description": "使用本地 Codex、Claude Code 或 Gemini CLI 求解网页练习，核对后填写，不自动提交。",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApVxRvAkrpStmrYKCDhlha1fs+eNjuTK91ccYte/lItovpzynZiwoKHnNtMIw/rnlxTBYT0z4SX/dZo9txqlAywoGaGqDq0fQA505DplbU0hhIKFOXEHyGOS7af/qYE79ZFmFJZa+/NfTC/SYyFcQzzfcCsvpwU+8ZMN3VEuvZNlmiWftGmf4KZ50bonH//MIbdeaTsRH7LfGbN8WeihLCuQfqrzYy6FUacHaebtr3EsbiGPM3iXzbdxrtoC9+UVrAOgo4bT8ucboGjVzfZK3wxQ+HengFGgVOrWgGCSYLF4gMIVOgtFEZUYtoIXDP7M3pdWJEhB600Kjsc+dAwSN1QIDAQAB",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "sidePanel",
+    "nativeMessaging",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://developer.huawei.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开 Nexly 练习助手"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "commands": {
+    "nexly-toggle-task": {
+      "suggested_key": {
+        "default": "Alt+Shift+N"
+      },
+      "description": "开始、暂停或继续当前练习（使用已保存的配置）"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/icon-32.png"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ]
+}

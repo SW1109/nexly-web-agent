@@ -1,0 +1,286 @@
+/** 通过 chrome.scripting 序列化到目标 frame；所有依赖必须留在函数内部。 */
+export async function pageAction(action, payload = {}) {
+  if (action === 'focusState') return { ok: true, visible: document.visibilityState === 'visible', focused: document.hasFocus() };
+  const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+  const visible = (el) => {
+    if (!el || el.closest('[hidden],[inert],[aria-hidden="true"],[data-nexly-controls]')) return false;
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+    }
+    const pane = el.closest('[role="tabpanel"]');
+    const tab = pane?.getAttribute('aria-labelledby');
+    if (tab && document.getElementById(tab)?.getAttribute('aria-selected') === 'false') return false;
+    return [...el.getClientRects()].some((rect) => rect.width > 0 && rect.height > 0);
+  };
+  const frameContext = () => {
+    let shown = true;
+    try { for (let view = window; view !== view.parent && view.frameElement; view = view.parent) { if (!visible(view.frameElement)) { shown = false; break; } } } catch {}
+    return { url: location.href, shown, children: [...document.querySelectorAll('iframe,frame')].map((el) => ({ url: el.src || 'about:blank', shown: visible(el) })) };
+  };
+  const readResult = (result) => action === 'read' ? { ...result, frame: frameContext() } : result;
+  const all = (selector, root = document) => [...root.querySelectorAll(selector)].filter(visible);
+  const text = (el) => normalize(el?.innerText || el?.textContent);
+  const hash = (value) => {
+    let result = 2166136261;
+    for (let i = 0; i < value.length; i++) result = Math.imul(result ^ value.charCodeAt(i), 16777619);
+    return (result >>> 0).toString(16);
+  };
+  const marker = /(?:编程|单选|多选|判断|填空|简答)题|第\s*\d+\s*\/\s*\d+\s*题/;
+  const candidates = all('[data-nexly-question],.question-container,.exam-question,.question-box,.problem-container,.subject-container').filter((el) => marker.test(text(el)) || el.hasAttribute('data-nexly-question'));
+  const leafCandidates = candidates.filter((candidate) => !candidates.some((other) => candidate !== other && candidate.contains(other)));
+  if (leafCandidates.length > 1) return readResult({ ok: false, error: '页面同时显示多个活动题目区域，请选中需要处理的题目' });
+  const root = leafCandidates[0] || document.body;
+  if (!root) return readResult({ ok: false, error: '页面尚未加载完成' });
+
+  const editorSelector = '.monaco-editor:not(.original-in-monaco-diff-editor),.ace_editor,.CodeMirror,textarea[data-code-editor],textarea.code-editor,textarea[data-language]';
+  const scopedEditors = all(editorSelector, root);
+  const editorRoots = scopedEditors.length ? scopedEditors : all(editorSelector);
+
+  function questionText() {
+    const clone = root.cloneNode(true);
+    const originals = [...root.querySelectorAll('*')], copies = [...clone.querySelectorAll('*')];
+    originals.forEach((el, index) => { if (!visible(el)) copies[index]?.remove(); });
+    clone.querySelectorAll('script,style,nav,header,footer,button,textarea,input,select,.monaco-editor,.ace_editor,.CodeMirror,[contenteditable="true"],[hidden],[aria-hidden="true"],.ant-tabs-content-holder,.test-results').forEach((el) => el.remove());
+    // 克隆节点没有布局；为块级元素加换行后读 textContent，避免题干、样例挤成一行。
+    clone.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,pre,tr,br').forEach((el) => el.append(document.createTextNode('\n')));
+    let value = normalize(clone.textContent).replace(/\n[ \t]*\n+/g, '\n');
+    const start = value.search(marker);
+    if (start >= 0) value = value.slice(start);
+    value = value.replace(/\n(?:控制台|测试用例|提交结果|提交记录|执行结果|重置代码|HarmonyOS Developer|工具\s*\n)[\s\S]*$/, '').trim();
+    return value;
+  }
+  const stem = questionText();
+  if (!marker.test(stem) && !root.hasAttribute('data-nexly-question')) return readResult({ ok: false, error: '此 frame 没有识别到练习题，不会操作普通表单' });
+  if (!stem || stem.length > 48000) return readResult({ ok: false, error: '题干过长或未能定位题目区域，请缩小页面内容或反馈页面结构' });
+
+  const optionNodes = all('input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]', root).filter((node) => !node.closest('[role="radio"],[role="checkbox"]') || node.matches('[role="radio"],[role="checkbox"]'));
+  const optionLabel = (el) => {
+    const label = el.closest('label,.ant-radio-wrapper,.ant-checkbox-wrapper,.el-radio,.el-checkbox');
+    return text(label) || (el.id ? text(document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) : '') || el.getAttribute('aria-label') || text(el.parentElement);
+  };
+  const options = optionNodes.map((el, i) => { const value = optionLabel(el); return { id: `option-${i}`, label: value.match(/^([A-Z])[.、．\s]/)?.[1] || String.fromCharCode(65 + i), text: value }; });
+  const inputNodes = all('textarea,input:not([type]),input[type="text"],input[type="number"],[contenteditable="true"]', root).filter((el) => !el.closest('.monaco-editor,.ace_editor,.CodeMirror') && !el.matches('[role="combobox"]') && !el.closest('.ant-select,.el-select,.test-cases,[data-nexly-tests]'));
+  let type = 'text';
+  if (/编程题/.test(stem) || (editorRoots.length && !/(?:单选|多选|判断|填空|简答)题/.test(stem))) type = 'code';
+  else if (/多选题/.test(stem) || optionNodes.some((el) => el.type === 'checkbox' || el.getAttribute('role') === 'checkbox')) type = 'multiple';
+  else if (/判断题/.test(stem)) type = 'judge';
+  else if (optionNodes.length >= 2) type = 'single';
+  else if (/填空题/.test(stem)) type = 'blank';
+  const fields = type === 'blank' || type === 'text' ? inputNodes.map((el, i) => ({ id: `field-${i}`, label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || `第 ${i + 1} 空` })) : [];
+  if (['single', 'multiple', 'judge'].includes(type) && (options.length < 2 || options.some((o) => !o.text))) return readResult({ ok: false, error: '选择题选项不完整，已停止识别' });
+  if (['blank', 'text'].includes(type) && !fields.length) return readResult({ ok: false, error: '没有识别到可编辑答案区域' });
+  const language = all('select,[role="combobox"],.ant-select-selection-item,.el-select__selected-item', root).map((el) => el.tagName === 'SELECT' ? el.selectedOptions?.[0]?.textContent : text(el) || text(el.parentElement)).find((value) => /ArkTS|JavaScript|TypeScript|Python|Java\b|C\+\+|C#|Go\b|Rust/i.test(value || '')) || '';
+  const title = stem.split('\n').map((line) => line.trim()).find((line) => line && !marker.test(line) && !/^\d+[、.]?$/.test(line))?.slice(0, 200) || stem.slice(0, 100);
+  const pageUrl = `${location.origin}${location.pathname}`;
+  const questionId = `${pageUrl}#${hash(JSON.stringify([type, stem, options, fields, language]))}`;
+
+  function codeEditor() {
+    const bindings = [];
+    let unavailable = 0;
+    const editorError = (message, code) => Object.assign(new Error(message), { code });
+    for (const el of editorRoots) {
+      let binding = null;
+      if (el.classList.contains('ace_editor')) {
+        // ace.edit 是工厂 API：换题期间调用会创建空编辑器。这里只读取站点已初始化的实例。
+        const editor = el.env?.editor;
+        if (editor?.getReadOnly?.()) continue;
+        if (editor?.getValue && editor?.setValue && (!editor.container || editor.container === el)) {
+          const session = editor.session || editor.getSession?.();
+          binding = { owner: session || editor, kind: 'Ace', get: () => editor.getValue(), set: (code) => editor.setValue(code, -1), append: (chunk) => {
+            if (session?.insert && session.getLength && session.getLine) { const row = session.getLength() - 1; session.insert({ row, column: session.getLine(row).length }, chunk); }
+            else editor.setValue(editor.getValue() + chunk, -1);
+          } };
+        }
+      } else if (el.classList.contains('monaco-editor')) {
+        const api = globalThis.monaco?.editor;
+        const instance = api?.getEditors?.().find((editor) => editor.getDomNode() === el);
+        const readOnlyOption = globalThis.monaco?.editor?.EditorOption?.readOnly;
+        if (instance?.getRawOptions?.().readOnly || (readOnlyOption !== undefined && instance?.getOption?.(readOnlyOption))) continue;
+        // 全局 getModels 可能包含旧题或其他标签，必须使用与可见 DOM 关联的实例模型。
+        const model = instance?.getModel();
+        if (model && !model.isDisposed?.()) binding = { owner: model, kind: 'Monaco', get: () => model.getValue(), set: (code) => model.setValue(code), append: (chunk) => {
+          if (model.applyEdits && model.getPositionAt) { const end = model.getPositionAt(model.getValue().length); model.applyEdits([{ range: { startLineNumber: end.lineNumber, startColumn: end.column, endLineNumber: end.lineNumber, endColumn: end.column }, text: chunk }]); }
+          else model.setValue(model.getValue() + chunk);
+        } };
+      } else if (el.CodeMirror) {
+        const cm = el.CodeMirror;
+        if (cm.getOption?.('readOnly')) continue;
+        binding = { owner: cm.getDoc?.() || cm, kind: 'CodeMirror 5', get: () => cm.getValue(), set: (code) => cm.setValue(code), append: (chunk) => {
+          if (cm.replaceRange && cm.posFromIndex) { const end = cm.posFromIndex(cm.getValue().length); cm.replaceRange(chunk, end, end, '+nexly'); }
+          else cm.setValue(cm.getValue() + chunk);
+        } };
+      } else if (el.matches('textarea') && !el.disabled && !el.readOnly) {
+        binding = { owner: el, kind: 'textarea', get: () => el.value, set: (code) => setInput(el, code) };
+      }
+      if (binding) bindings.push({ ...binding, el }); else unavailable++;
+    }
+    // 只读预览和非活动标签已排除；仍有多个可写区域时不按内容长度或非空值猜测。
+    if (bindings.length + unavailable > 1) throw editorError('仍有多个活动代码区域，等待页面完成编辑器切换', 'EDITOR_AMBIGUOUS');
+    if (!bindings.length) throw editorError('当前题目的编辑器正在初始化或尚未暴露可验证 API', 'EDITOR_NOT_READY');
+    const binding = bindings[0];
+    const registry = globalThis.__nexlyEditorBindings ||= new WeakMap();
+    let saved = registry.get(binding.el);
+    if (!saved || saved.owner !== binding.owner) { saved = { owner: binding.owner, token: crypto.randomUUID() }; registry.set(binding.el, saved); }
+    return { ...binding, token: saved.token };
+  }
+  function setInput(el, value) {
+    if (el.disabled || el.readOnly) throw new Error('答案区域当前不可编辑，请等待页面允许输入');
+    if (el.isContentEditable) el.textContent = value;
+    else {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  let editorInfo = { kind: '', supported: true, code: '', error: '' };
+  if (type === 'code') {
+    try { const editor = codeEditor(); editorInfo = { kind: editor.kind, supported: true, code: editor.get(), binding: editor.token, retryable: false, error: '' };
+      if (all('[aria-busy="true"],.ant-spin-spinning,.el-loading-mask', root).length) editorInfo = { ...editorInfo, supported: false, retryable: true, error: '正在等待当前题目加载完成' }; }
+    catch (error) { editorInfo = { kind: editorRoots[0]?.className || 'unknown', supported: false, retryable: true, code: '', error: error.message }; }
+  }
+  const question = { questionId, title, type, stem, options: type === 'code' ? [] : options, fields, language: normalize(language).slice(0, 100), starterCode: editorInfo.code, pageUrl };
+  if (action === 'read') return readResult({ ok: true, question, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null }, visible: document.visibilityState === 'visible' });
+  if (!payload.allowBackground && document.visibilityState !== 'visible') return action === 'fillStep' ? { ok: true, waitingForFocus: true } : { ok: false, error: '练习页已隐藏，已停止页面操作；请回到原标签后继续' };
+  if (payload.questionId !== questionId) return { ok: false, error: '页面题目已变化，拒绝把旧答案写入新题' };
+
+  if (type === 'code' && ['fillStep', 'fill', 'run'].includes(action)) {
+    if (!editorInfo.supported) return { ok: true, waiting: true, detail: editorInfo.error };
+    if (payload.editorBinding && editorInfo.binding !== payload.editorBinding) throw new Error('编辑器实例或代码文件已切换，停止旧输入，请重新读取当前题');
+  }
+
+  if (action === 'fillStep') {
+    const answer = payload.answer;
+    if (!answer || answer.questionId !== questionId || answer.type !== type) throw new Error('答案与当前题目不匹配');
+    const pacing = payload.pacing || { typewriter: false, typingIntervalMs: 0 };
+    const progress = payload.progress || { started: false, offset: 0, fieldIndex: 0, step: 0 };
+    const interval = pacing.typewriter ? pacing.typingIntervalMs : 0;
+    if (!Number.isInteger(interval) || interval < 0 || interval > 500) throw new Error('输入间隔无效');
+    const fragmentSize = interval ? Math.max(1, Math.floor(120 / interval)) : Infinity;
+    const normalizeCode = (value) => value.replace(/\r\n/g, '\n');
+    const ensureUnchanged = () => {
+      if (questionText() !== stem || !root.isConnected) throw new Error('输入期间页面或题目已变化，已停止');
+    };
+    async function writeFragment(get, set, append, target, typed) {
+      let offset = progress.offset;
+      if (!Number.isInteger(offset) || offset < 0 || offset > target.length) throw new Error('输入进度无效');
+      const startingValue = get();
+      let wrote = false;
+      if (!progress.started) offset = 0;
+      if (progress.started && get() !== target.slice(0, offset)) throw new Error('输入区域被其他操作改动，已停止，避免覆盖你的编辑');
+      const characters = Array.from(target.slice(offset));
+      const fragment = typed ? characters.slice(0, fragmentSize) : characters;
+      for (const char of typed && fragment.length ? fragment : [fragment.join('')]) {
+        if (typed && interval) await new Promise((resolve) => setTimeout(resolve, interval));
+        if (!payload.allowBackground && document.visibilityState !== 'visible') break;
+        ensureUnchanged();
+        if ((!progress.started && offset === 0 ? get() !== startingValue : get() !== target.slice(0, offset))) throw new Error('输入期间内容发生变化，已停止');
+        // 首个字符与模板替换一次完成，避免先清空、再等待时留下一块空白编辑器。
+        if (!progress.started && offset === 0) set(char);
+        else if (append) append(char); else set(target.slice(0, offset) + char);
+        wrote = true;
+        offset += char.length;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if ((!progress.started && !wrote ? get() !== startingValue : get() !== target.slice(0, offset))) throw new Error('逐字输入回读不一致，请检查编辑器');
+      return offset;
+    }
+    if (type === 'code') {
+      const editor = codeEditor(), target = normalizeCode(answer.code);
+      const boundGet = () => { if (!editor.el.isConnected || !visible(editor.el) || codeEditor().token !== editor.token) throw new Error('输入期间编辑器已切换，停止旧输入'); return normalizeCode(editor.get()); };
+      const offset = await writeFragment(boundGet, editor.set, editor.append, target, Boolean(pacing.typewriter && interval));
+      const done = offset === target.length;
+      return { ok: true, done, verified: done, waitingForFocus: !payload.allowBackground && document.visibilityState !== 'visible', progress: { started: offset > 0 || target.length === 0, offset, fieldIndex: 0, step: progress.step + 1 }, written: offset, total: target.length, nextAction: false, detail: done ? `已通过 ${editor.kind} 输入并回读代码` : '' };
+    }
+    if (['single', 'multiple', 'judge'].includes(type)) {
+      const desired = new Set(answer.choiceIds);
+      if (!desired.size || [...desired].some((id) => !options.some((option) => option.id === id))) throw new Error('选项标识无效');
+      const checked = (node) => node.matches('input') ? node.checked : node.getAttribute('aria-checked') === 'true';
+      const index = optionNodes.findIndex((node, i) => checked(node) !== desired.has(`option-${i}`) && (type === 'multiple' || desired.has(`option-${i}`)));
+      if (index >= 0) {
+        const node = optionNodes[index];
+        if (node.disabled || node.getAttribute('aria-disabled') === 'true') return { ok: true, waiting: true, detail: '选项暂不可操作' };
+        node.click(); await new Promise((resolve) => setTimeout(resolve, 40));
+        if (checked(node) !== desired.has(`option-${index}`)) throw new Error('页面没有接受选项变更');
+      }
+      const done = optionNodes.every((node, i) => checked(node) === desired.has(`option-${i}`));
+      return { ok: true, done, verified: done, progress: { ...progress, step: progress.step + 1 }, nextAction: true, detail: done ? '已核对页面实际选中状态' : '' };
+    }
+    const fieldIndex = progress.fieldIndex;
+    if (!Number.isInteger(fieldIndex) || fieldIndex < 0 || fieldIndex >= fields.length || answer.fills.length !== fields.length) throw new Error('填写字段不匹配');
+    const field = fields[fieldIndex], node = inputNodes[fieldIndex], fill = answer.fills.find((item) => item.fieldId === field.id);
+    if (!fill) throw new Error('答案字段缺失');
+    const get = () => node.isContentEditable ? node.textContent : node.value;
+    // 数值控件可能拒绝中间态（例如 3.），因此整值写入；文本和代码可逐字输入。
+    const offset = await writeFragment(get, (value) => setInput(node, value), null, fill.value, Boolean(pacing.typewriter && interval && node.type !== 'number'));
+    const fieldDone = offset === fill.value.length;
+    const done = fieldDone && fieldIndex === fields.length - 1;
+    if (done) for (const item of answer.fills) {
+      const el = inputNodes[fields.findIndex((entry) => entry.id === item.fieldId)];
+      if (!el || (el.isContentEditable ? el.textContent : el.value) !== item.value) throw new Error('填写内容回读不一致');
+    }
+    return { ok: true, done, verified: done, waitingForFocus: !payload.allowBackground && document.visibilityState !== 'visible', progress: { started: !fieldDone && offset > 0, offset: fieldDone ? 0 : offset, fieldIndex: fieldDone ? fieldIndex + 1 : fieldIndex, step: progress.step + 1 }, written: fieldIndex + (fieldDone ? 1 : 0), total: fields.length, nextAction: fieldDone, detail: done ? '已核对所有填写字段的实际值' : '' };
+  }
+
+  if (action === 'fill') {
+    const answer = payload.answer;
+    if (!answer || answer.questionId !== questionId || answer.type !== type) throw new Error('答案与当前题目不匹配');
+    if (type === 'code') {
+      const editor = codeEditor();
+      editor.set(answer.code);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (editor.get().replace(/\r\n/g, '\n') !== answer.code.replace(/\r\n/g, '\n')) throw new Error('代码写入后回读不一致，请手动核对；未提交');
+      return { ok: true, verified: true, detail: `已通过 ${editor.kind} 整段替换并回读代码` };
+    }
+    if (['single', 'multiple', 'judge'].includes(type)) {
+      const desired = new Set(answer.choiceIds);
+      if (!desired.size || [...desired].some((id) => !options.some((option) => option.id === id))) throw new Error('选项标识无效');
+      for (let i = 0; i < optionNodes.length; i++) {
+        const node = optionNodes[i], wanted = desired.has(`option-${i}`);
+        const checked = node.matches('input') ? node.checked : node.getAttribute('aria-checked') === 'true';
+        if (checked !== wanted && (wanted || type === 'multiple')) {
+          if (node.disabled || node.getAttribute('aria-disabled') === 'true') throw new Error('选项暂不可操作');
+          node.click();
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const checked = optionNodes.map((node, i) => (node.matches('input') ? node.checked : node.getAttribute('aria-checked') === 'true') ? `option-${i}` : null).filter(Boolean);
+      if (checked.length !== desired.size || checked.some((id) => !desired.has(id))) throw new Error('页面没有接受全部选项变更，请人工检查');
+      return { ok: true, verified: true, detail: '已核对页面实际选中状态' };
+    }
+    if (answer.fills.length !== fields.length) throw new Error('填写字段数量不匹配');
+    for (const fill of answer.fills) {
+      const index = fields.findIndex((field) => field.id === fill.fieldId);
+      if (index < 0) throw new Error('填写字段不存在');
+      setInput(inputNodes[index], fill.value);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const fill of answer.fills) {
+      const node = inputNodes[fields.findIndex((field) => field.id === fill.fieldId)];
+      if ((node.isContentEditable ? node.textContent : node.value) !== fill.value) throw new Error('填写内容回读不一致，请人工检查');
+    }
+    return { ok: true, verified: true, detail: '已核对所有填写字段的实际值' };
+  }
+
+  const buttons = all('button,[role="button"],a', root);
+  const buttonText = (el) => normalize(el.getAttribute('aria-label') || el.getAttribute('title') || text(el)).replace(/\s+/g, '');
+  const runButtons = buttons.filter((el) => /^(执行代码|运行代码|运行测试|RunCode|RunTests)$/i.test(buttonText(el)));
+  const runButton = runButtons.length === 1 ? runButtons[0] : null;
+  const isDisabled = (el) => el.disabled || el.getAttribute('aria-disabled') === 'true' || /loading|disabled/i.test(el.className || '');
+  function executionResult() {
+    const panels = all('[role="tabpanel"],.ant-tabs-tabpane,.execution-result,[data-nexly-result]', root);
+    const candidate = panels.map(text).find((value) => /测试输出|预期输出|编译失败|运行错误|运行超时/.test(value));
+    return candidate?.slice(0, 4000) || '';
+  }
+  if (action === 'run') {
+    if (type !== 'code' || !runButton) return { ok: false, error: '没有唯一的“执行代码”按钮；不会用“提交”按钮代替' };
+    if (isDisabled(runButton)) return { ok: true, waiting: true, detail: '执行按钮暂不可用，等待平台恢复' };
+    if (codeEditor().get().replace(/\r\n/g, '\n') !== payload.code.replace(/\r\n/g, '\n')) throw new Error('编辑器内容已变化，停止运行');
+    const previousResult = executionResult();
+    runButton.click();
+    return { ok: true, clicked: true, previousResult };
+  }
+  if (action === 'runStatus') return { ok: true, loading: runButton ? Boolean(isDisabled(runButton)) : true, result: executionResult() };
+  return { ok: false, error: '不支持的页面操作' };
+}

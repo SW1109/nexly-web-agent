@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（私密报告）
+    url: https://github.com/SW1109/nexly-web-agent/security/advisories/new
+    about: 请勿在公开 Issue 中披露漏洞细节或登录凭证。

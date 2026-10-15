@@ -1,0 +1,14 @@
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ROOT, extensionIdentity, requireModernNode } from './project.mjs';
+requireModernNode();
+const { id } = await extensionIdentity();
+const target = join(ROOT, 'dist/extension');
+await mkdir(target, { recursive: true });
+await cp(join(ROOT, 'extension'), target, { recursive: true });
+await mkdir(join(ROOT, 'dist'), { recursive: true });
+await writeFile(join(ROOT, 'dist/extension-id.txt'), id + '\n');
+const manifest = JSON.parse(await readFile(join(target, 'manifest.json'), 'utf8'));
+const project = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
+if (manifest.version !== project.version) throw new Error('版本号不一致');
+console.log(`扩展已生成：${target}\n固定扩展 ID：${id}\n请在 chrome://extensions 中启用开发者模式，加载这个目录。`);

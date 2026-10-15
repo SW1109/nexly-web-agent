@@ -1,0 +1,18 @@
+# 本机配置、鉴权与运行产物
+.local/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+.DS_Store
+
+# 可重建产物与开发工具缓存
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
