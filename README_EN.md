@@ -4,6 +4,8 @@
 
 > A Chrome / Edge browser extension for web-based exercises and coding practice, supporting both **Direct API** and **Local CLI** modes.
 
+[User Guide](docs/USER_GUIDE.md) · [Privacy Policy](docs/PRIVACY.md) · [Permissions Directory](docs/PERMISSIONS.md) · [Edge Store Listing](docs/edge-store/SUBMISSION.md) · [Report Bug](https://github.com/SW1109/nexly-web-agent/issues/new?template=bug_report.yml) · [Contributing](CONTRIBUTING.md)
+
 QuizMate is designed for learning and practice environments where assistive tools are permitted. The extension automatically detects questions, options, and code editors on the current web page, requests solution proposals from your chosen LLM or local CLI, and supports verified readback, automatic filling, and code sample validation. Final submissions are strictly manual—QuizMate never submits answers or evades platform rules automatically.
 
 ---
@@ -124,3 +126,17 @@ npm run doctor
 2. **Compliance**: Use only in educational, practice, and self-assessment environments where AI assistance is explicitly authorized. Do not use for accredited exams or in violation of academic integrity policies.
 3. **Model Accuracy**: Large language models may produce hallucinations or inaccuracies. Confidence ratings reflect internal model heuristics and do not guarantee correctness.
 4. **Privacy**: All settings and keys are stored locally. Direct API requests go exclusively to your configured service endpoint without passing through any intermediate proxy servers.
+
+---
+
+## Voluntary Sponsorship
+
+If QuizMate has been helpful for your studies or coding practice, you are welcome to voluntarily support its ongoing maintenance!
+- All features are fully open and **never locked behind any paywall**.
+- Sponsorship does not guarantee model output accuracy or specific exam scores.
+- Payments are handled directly by WeChat Pay. Please verify recipient and amount before completing payment. The extension does not record or process any personal financial transactions.
+
+<p align="left">
+  <img src="extension/assets/wechat-support.jpg" width="280" alt="WeChat Pay Sponsorship QR Code">
+</p>
+
