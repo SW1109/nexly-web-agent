@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { HOST_NAME } from '../extension/lib/contracts.js';
+import { nativeRegistrySubkey } from './native-platform.mjs';
 
 // A fixed PowerShell program uses .NET registry APIs so Unicode paths do not
 // depend on reg.exe's localized output or the terminal code page.
@@ -55,7 +55,7 @@ foreach ($view in $views) {
 }
 `;
 
-export function windowsRegistration(action, manifestPath) {
+export function windowsRegistration(action, manifestPath, browser = 'chrome') {
   if (process.platform !== 'win32') throw new Error('Windows 注册表操作仅适用于 Windows。');
   const executable = join(process.env.SystemRoot || 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
   try {
@@ -63,7 +63,7 @@ export function windowsRegistration(action, manifestPath) {
       encoding: 'utf8', windowsHide: true, timeout: 15000,
       env: {
         ...process.env,
-        NEXLY_NATIVE_REGISTRY_SUBKEY: `Software\\Google\\Chrome\\NativeMessagingHosts\\${HOST_NAME}`,
+        NEXLY_NATIVE_REGISTRY_SUBKEY: nativeRegistrySubkey(browser),
         NEXLY_NATIVE_REGISTRY_MANIFEST: manifestPath,
         NEXLY_NATIVE_REGISTRY_ACTION: action
       },
@@ -71,6 +71,6 @@ export function windowsRegistration(action, manifestPath) {
     });
     return action === 'query' ? JSON.parse(output.replace(/^\uFEFF/, '').trim()) : undefined;
   } catch (error) {
-    throw new Error('Chrome 本地桥注册表操作失败；请检查是否已有不同来源的同名配置，以及当前用户的注册表权限。', { cause: error });
+    throw new Error('浏览器本地桥注册表操作失败；请检查是否已有不同来源的同名配置，以及当前用户的注册表权限。', { cause: error });
   }
 }

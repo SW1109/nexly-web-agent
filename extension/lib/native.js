@@ -5,6 +5,7 @@ function connect() {
   if (port) return port;
   port = chrome.runtime.connectNative(HOST_NAME);
   port.onMessage.addListener((message) => {
+    if (!message || typeof message !== 'object') return;
     const request = pending.get(message.requestId);
     if (!request) return;
     if (message.type === 'progress') { request.onProgress?.(message.data); return; }
@@ -16,7 +17,7 @@ function connect() {
   port.onDisconnect.addListener(() => {
     const detail = chrome.runtime.lastError?.message || '本地桥已断开';
     port = null;
-    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error(`无法连接本地 CLI 桥：${detail}。请先运行项目 scripts/setup.sh。`)); }
+    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error(`无法连接本地 CLI 桥：${detail}。请按操作手册安装当前浏览器的本地桥，并核对扩展 ID。`)); }
     pending.clear();
   });
   return port;

@@ -1,0 +1,25 @@
+name: 功能建议
+description: 提出 QuizMate 使用体验、适配或文档改进建议。
+title: "[建议] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: "感谢建议！请勿上传 API Key、登录信息或不允许公开的题目。不要请求绕过考试监控、网站安全限制或自动交卷。"
+  - type: textarea
+    id: need
+    attributes:
+      label: 希望解决什么问题？
+      description: 请描述使用场景与当前困难。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的行为或改进
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 其他方案或补充（可选）

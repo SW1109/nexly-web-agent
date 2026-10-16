@@ -1,5 +1,5 @@
 name: Bug 反馈
-description: 报告 Nexly 安装、CLI 连接、题目识别或填写问题。
+description: 报告 QuizMate 安装、CLI / API 连接、题目识别或填写问题。
 title: "[Bug] "
 labels: [bug]
 body:
@@ -7,14 +7,14 @@ body:
     attributes:
       value: |
         感谢反馈。请先搜索已有 Issues，并尽量提供最小复现步骤。
-        **这是公开表单，请勿上传 API Key、令牌、Cookie、账号配置或个人数据。**
+        **这是公开表单，请勿上传 API Key、加密口令、密文、令牌、Cookie、账号配置或个人数据。**
         安全漏洞请使用仓库 Security 页的私密报告入口，不要公开披露。
   - type: input
     id: extension-version
     attributes:
-      label: Nexly 扩展版本
-      description: 可在 chrome://extensions 查看。
-      placeholder: 例如 0.3.0
+      label: QuizMate 扩展版本
+      description: 可在 chrome://extensions 或 edge://extensions 查看。
+      placeholder: 例如 0.4.0
     validations:
       required: true
   - type: dropdown
@@ -24,25 +24,28 @@ body:
       options:
         - macOS
         - Linux
-        - Windows（暂不支持自动注册本地桥）
+        - Windows
         - 其他
     validations:
       required: true
   - type: input
     id: runtime-versions
     attributes:
-      label: 系统 / Chrome / Node.js 版本
+      label: 系统 / Chrome 或 Edge / Node.js 版本（API 模式无需 Node.js）
       placeholder: 请填写具体版本
     validations:
       required: true
   - type: dropdown
     id: cli-provider
     attributes:
-      label: 使用的 CLI
+      label: 连接方式 / CLI
       options:
+        - API 模式（OpenAI 兼容）
         - Codex CLI
         - Claude Code CLI
         - Gemini CLI
+        - Qwen Code CLI
+        - Kimi CLI
         - 多个 CLI 均有问题
         - 尚未调用 CLI / 与 CLI 无关
     validations:
@@ -50,8 +53,8 @@ body:
   - type: input
     id: cli-version
     attributes:
-      label: CLI 版本
-      description: 如使用了 ccSwitch，也可补充其版本；不要粘贴登录配置。
+      label: CLI 版本或 API 协议 / 模型
+      description: 本地模式可补充 ccSwitch 版本；API 模式请填写 Chat Completions / Responses 和模型 ID，不要粘贴密钥或登录配置。
   - type: input
     id: page-url
     attributes:

@@ -1,0 +1,21 @@
+/* 帮助页复用现有品牌 tokens，仅调整长文档的阅读宽度和层级。 */
+.help-page .header, .help-page main { max-width: 960px; }
+.help-page main { padding: 24px; margin-inline: auto; }
+.help-intro { padding: 16px 8px 24px; }
+.help-intro h2 { font-size: clamp(22px, 3vw, 30px); line-height: 1.3; margin: 8px 0 12px; }
+.help-page .eyebrow { font-size: 11px; letter-spacing: .12em; color: var(--muted); }
+.help-page .section { padding: 24px; margin: 0 0 20px; scroll-margin-top: 90px; }
+.help-page h3 { font-size: 16px; line-height: 1.5; margin: 24px 0 8px; }
+.help-page p, .help-page li { line-height: 1.85; overflow-wrap: anywhere; }
+.help-page li + li { margin-top: 8px; }
+.help-page code { white-space: normal; overflow-wrap: anywhere; }
+.help-back { white-space: nowrap; font-size: 12px; }
+.guide-steps article { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 16px; padding-block: 16px; border-bottom: 1px solid var(--border); }
+.guide-steps article h3 { margin: 0 0 8px; }
+.step-number { color: var(--blue); font: 600 12px/28px ui-monospace, monospace; }
+.guide-steps + details { margin-top: 20px; }
+.help-page figure { margin: 20px 0 0; text-align: center; }
+#wechat-support { max-width: 100%; height: auto; object-fit: contain; background: white; border-radius: var(--radius-md); }
+.skip-link { position: fixed; top: -100px; z-index: 100; padding: 12px; background: var(--surface); }
+.skip-link:focus { top: 4px; }
+@media (max-width: 480px) { .help-page main { padding: 12px; } .help-page .section { padding: 16px; } .guide-steps article { gap: 8px; grid-template-columns: 24px minmax(0, 1fr); } }

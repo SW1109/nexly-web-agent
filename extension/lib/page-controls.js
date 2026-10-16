@@ -1,7 +1,7 @@
 /** 注入题目所在的隔离世界；保持 closed Shadow DOM，不向网页开放任务入口。 */
 export function installPageControls(initialState, appearance = { opacity: 90 }, initialPosition = { x: 1, y: 1 }) {
   const previous = globalThis.__nexlyPageControls;
-  if (previous?.revision === 3 && previous.host?.isConnected) {
+  if (previous?.revision === 4 && previous.host?.isConnected) {
     previous.paint(initialState); previous.configure(appearance, initialPosition); return { ok: true };
   }
   try { if (previous?.cleanup) previous.cleanup(); else if (previous?.listener) chrome.runtime.onMessage.removeListener(previous.listener); } catch {}
@@ -33,14 +33,14 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   `;
   const widget = document.createElement('div'); widget.className = 'widget';
   const launcher = document.createElement('button'); launcher.className = 'launcher'; launcher.type = 'button';
-  launcher.setAttribute('aria-label', 'Nexly 页内控制，悬浮展开，拖动移动'); launcher.setAttribute('aria-expanded', 'false'); launcher.setAttribute('aria-controls', 'nexly-popover');
+  launcher.setAttribute('aria-label', 'QuizMate 页内控制，悬浮展开，拖动移动'); launcher.setAttribute('aria-expanded', 'false'); launcher.setAttribute('aria-controls', 'quizmate-popover');
   launcher.title = '悬浮展开 · 拖动移动 · Alt + 方向键微调位置';
   const logo = document.createElement('img'); logo.src = chrome.runtime.getURL('icons/icon-32.png'); logo.alt = ''; logo.draggable = false;
   const dot = document.createElement('span'); dot.className = 'dot'; dot.setAttribute('aria-hidden', 'true'); launcher.append(logo, dot);
-  const popover = document.createElement('section'); popover.className = 'popover'; popover.id = 'nexly-popover'; popover.setAttribute('aria-label', 'Nexly 页内控制'); popover.inert = true;
+  const popover = document.createElement('section'); popover.className = 'popover'; popover.id = 'quizmate-popover'; popover.setAttribute('aria-label', 'QuizMate 页内控制'); popover.inert = true;
   const header = document.createElement('header'); header.title = '拖动移动';
   const grip = document.createElement('span'); grip.className = 'grip'; grip.textContent = '⠿'; grip.setAttribute('aria-hidden', 'true');
-  const title = document.createElement('strong'); title.textContent = 'Nexly';
+  const title = document.createElement('strong'); title.textContent = 'QuizMate';
   const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', '收起页内控制');
   header.append(grip, title, close);
   const body = document.createElement('div'); body.className = 'body';
@@ -52,7 +52,7 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   start.textContent = '开始'; pause.textContent = '暂停'; stop.textContent = '停止'; actions.append(start, pause, stop);
   const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = '使用已保存配置 · 最终提交由你操作';
   body.append(questionLabel, status, actions, hint); popover.append(header, body); widget.append(launcher, popover); shadow.append(style, widget); document.documentElement.append(host);
-  const phases = { awaitingManual: '等待人工提交并换题', idle: '可以开始', reading: '读取题目中', read: '题目已读取', solving: 'CLI 求解中', delaying: '按配置等待填写', applying: '输入答案中', filled: '已填写，未提交', paused: '已暂停', stopped: '已停止', error: '任务遇到问题', ready: '答案待处理', waiting: '等待平台开放操作', testing: '等待样例结果', interrupted: '任务已中断' };
+  const phases = { awaitingManual: '等待人工提交并换题', idle: '准备就绪', read: '题目已读取', reading: '读取题目中', solving: '模型求解中', delaying: '按配置等待填写', ready: '答案待复核', applying: '写入并核对中', filled: '已填写，未提交', testing: '等待样例执行结果', waiting: '等待平台开放操作', paused: '任务已暂停', stopped: '任务已停止', error: '任务遇到问题', interrupted: '任务已中断' };
   let current = initialState, pending = false, position = { ...initialPosition }, expanded = false;
   let drag = null, collapseTimer, syncTimer, suppressClickUntil = 0, keyboard = false, suppressFocus = false, disposed = false;
   const clamp = (value, min, max) => Math.min(Math.max(min, value), Math.max(min, max));
@@ -91,13 +91,17 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     stop.disabled = pending || !value.busy;
     questionLabel.textContent = value.questionTitle || ''; questionLabel.hidden = !value.questionTitle;
     status.className = `status${value.error ? ' error' : ''}`;
-    status.textContent = value.error || `${phases[value.phase] || value.phase}${value.typingProgress ? ` · ${value.typingProgress.written}/${value.typingProgress.total}` : ''}${value.completed ? ` · 已填 ${value.completed} 题` : ''}`;
+    const phaseText = phases[value.phase] || value.phase;
+    const elapsedText = value.phase === 'solving' && value.elapsedSeconds ? ` · ${value.elapsedSeconds} 秒` : '';
+    const typingText = value.typingProgress ? ` · ${value.typingProgress.written}/${value.typingProgress.total}` : '';
+    const completedText = value.completed ? ` · 已填写 ${value.completed} 题` : '';
+    status.textContent = value.error || `${phaseText}${elapsedText}${typingText}${completedText}`;
     widget.dataset.busy = String(Boolean(value.busy)); widget.dataset.paused = String(Boolean(value.paused)); widget.dataset.error = String(Boolean(value.error));
-    launcher.setAttribute('aria-label', `Nexly 页内控制：${phases[value.phase] || value.phase}。悬浮展开，拖动移动`);
+    launcher.setAttribute('aria-label', `QuizMate 页内控制：${phaseText}。悬浮展开，拖动移动`);
     if (expanded) layout();
   }
   async function send(event, action) {
-    // 合成点击不能启动 CLI；拖动松手产生的 click 也不执行任务。
+    // 合成点击不能启动任务；拖动松手产生的 click 也不执行任务。
     if (!event.isTrusted || pending || performance.now() < suppressClickUntil) return;
     pending = true; paint(current);
     try {
@@ -187,7 +191,7 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     disposed = true; observer.disconnect(); clearTimeout(syncTimer); clearTimeout(collapseTimer);
     window.removeEventListener('resize', layout); document.removeEventListener('change', onChange, true); chrome.runtime.onMessage.removeListener(listener); host.remove();
   };
-  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 3 };
+  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 4 };
   configure(appearance, initialPosition); paint(initialState);
   return { ok: true };
 }

@@ -1,14 +1,22 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nexly 网页练习助手</title><link rel="stylesheet" href="panel.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuizMate · 智答伴侣</title><link rel="stylesheet" href="panel.css"></head>
 <body>
 <header class="header">
-  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>Nexly <span class="version">0.3.0</span></h1><p>网页练习助手</p></div></div>
+  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.0</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
   <button id="open-settings" class="settings-button" type="button" aria-controls="settings-view" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="white"/><circle cx="15" cy="17" r="3" fill="white"/></svg>设置</button>
 </header>
-<div class="connection-strip"><p id="connection-status" class="status" role="status">正在检测本地桥…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
+<div class="connection-strip"><p id="connection-status" class="status" role="status">正在检查模型配置…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
 <div id="error" class="error global-error" role="alert" hidden></div>
+<nav class="resource-links" aria-label="帮助与反馈"><a href="help.html" target="_blank" rel="noopener noreferrer">操作手册</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">提 Bug</a><a data-project-link="feedback" target="_blank" rel="noopener noreferrer">建议</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">赞助</a></nav>
 <main>
+<section id="data-consent" class="section notice" aria-labelledby="data-use-title" hidden>
+  <h2 id="data-use-title">开始前，了解数据如何使用</h2>
+  <p>求解会把识别出的题目、选项、代码和去除查询参数的页面地址发送给你选定的 API 或本地 CLI 对应服务商；开启自动修正时，也会发送当前执行日志。AI 可能出错，请仅在获准使用辅助工具的练习中使用。</p>
+  <p>配置和练习记录保存在当前浏览器，不做云同步。扩展没有自建题库、遥测或自动上传反馈；服务商可能另行保留请求并收费。<a href="help.html#privacy" target="_blank" rel="noopener noreferrer">完整隐私说明</a></p>
+  <label class="checkbox"><input id="data-consent-check" type="checkbox"><span>我已阅读并同意按上述方式向所选服务商发送练习数据。</span></label>
+  <button id="accept-data-use" class="primary" type="button" disabled>确认并启用 AI 功能</button>
+</section>
 <div id="task-view">
   <section class="section question-section" aria-labelledby="question-title">
     <div class="section-heading"><h2 id="question-title">当前练习</h2><button id="read" class="quiet" type="button">重新读取 <span aria-hidden="true">↻</span></button></div>
@@ -26,22 +34,44 @@
   <section id="answer-section" class="section" aria-labelledby="answer-title" hidden>
     <div class="section-heading"><h2 id="answer-title">答案预览</h2><span id="confidence" class="badge"></span></div><pre id="answer-body" class="preview answer"></pre><p id="explanation" class="muted"></p><p id="fill-status" class="caption" aria-live="polite"></p><div class="button-row"><button id="fill" class="secondary" type="button">填入此答案</button><button id="run" class="quiet" type="button">执行样例</button></div>
   </section>
-  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details>
+  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><button id="clear-history" class="quiet" type="button">清除练习记录</button><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details>
   <footer><span class="shortcut">Alt ⇧ N</span> 开始 / 暂停 / 继续<span class="footer-note">运行中的任务绑定启动时的练习页</span></footer>
 </div>
 <div id="settings-view" hidden>
   <div class="settings-heading"><button id="close-settings" class="quiet" type="button">← 返回练习</button><h2 tabindex="-1" id="settings-title">设置</h2><p class="muted">所有偏好，一处管理。</p></div>
   <section class="section" aria-labelledby="connection-title">
-    <div class="section-heading"><h2 id="connection-title">本地 CLI</h2><button id="refresh" class="quiet" type="button">刷新连接</button></div>
-    <label for="provider">使用哪个 CLI</label><select id="provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option></select>
-    <p id="provider-detail" class="muted">使用 CLI 现有登录和配置，无需填写 API Key。</p><p id="config-detail" class="caption"></p>
-    <div id="setup-help" class="notice" hidden><strong>先安装本地桥</strong><p>在项目目录执行：</p><code>bash scripts/setup.sh</code><p>完成后点击“刷新连接”。</p></div>
+    <div class="section-heading"><h2 id="connection-title">模型连接</h2><button id="refresh" class="quiet" type="button">刷新连接</button></div>
+    <label for="connection-mode">使用方式</label><select id="connection-mode"><option value="local">本地模式 · 使用已安装的 CLI</option><option value="api">API 模式 · 无需 CLI 或本地桥</option></select>
+    <div id="local-settings" class="connection-fields">
+      <label for="provider">使用哪个 CLI</label><select id="provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option><option value="qwen">Qwen Code · 通义千问</option><option value="kimi">Kimi CLI · 月之暗面</option></select>
+      <p id="provider-detail" class="muted">使用 CLI 现有登录和配置，无需在插件填写 API Key。国产模型也可通过已配置兼容服务的 Claude Code / Codex 使用。</p><p id="config-detail" class="caption"></p>
+      <div id="setup-help" class="notice" hidden><strong>先安装本地桥</strong><p>在项目目录执行：</p><code>node scripts/setup.mjs</code><p>完成后点击“刷新连接”。API 模式无需此步骤。</p></div>
+    </div>
+    <div id="api-settings" class="connection-fields" hidden>
+      <p class="muted">支持厂商官方 API 和中转站的 OpenAI 兼容接口。配置仅存当前浏览器，不做云端同步；求解时题目仍会发送到所选服务商，请确认可信并获得页面使用许可。</p>
+      <aside class="api-promotion" aria-label="推广服务"><span class="caption">推广</span><div><strong>需要中转服务？</strong><a href="https://nexly.guangnian.xin/" target="_blank" rel="noopener noreferrer">nexly.guangnian.xin ↗</a><p class="caption">可选中转服务，费用与隐私以该站规则为准；仅点击打开，不自动配置或传输题目。</p></div></aside>
+      <div class="field"><label for="api-provider">服务商预设</label><select id="api-provider" aria-describedby="api-provider-hint"></select><p id="api-provider-hint" class="caption"></p><a id="api-provider-docs" class="caption" target="_blank" rel="noopener noreferrer" hidden>查看官方接入说明 ↗</a></div>
+      <div class="field"><label for="api-url">调用地址 <span class="required">必填</span></label><input id="api-url" type="url" placeholder="https://api.example.com/v1" autocomplete="url" spellcheck="false" aria-describedby="api-url-hint api-url-error"><p id="api-url-hint" class="caption">支持基础地址或完整 /chat/completions、/responses 地址。公网须 HTTPS；HTTP 仅限本机。</p><p id="api-url-error" class="field-error" hidden></p></div>
+      <div class="field"><label for="api-key">API Key <span class="required">必填</span></label><div class="secret-field"><input id="api-key" type="password" placeholder="请输入 API Key" autocomplete="new-password" spellcheck="false" aria-describedby="api-key-hint api-key-error"><button id="show-api-key" class="quiet" type="button" aria-pressed="false" aria-controls="api-key">显示</button></div><p id="api-key-hint" class="caption">默认仅保存在本次浏览器会话。密钥不回显、不写入日志，也不传给题目网页。</p><p id="api-key-error" class="field-error" hidden></p><button id="clear-api-key" class="quiet" type="button">清除已保存密钥</button></div>
+      <label class="checkbox"><input id="remember-api-key" type="checkbox"><span>口令加密保存到本机<small>AES-GCM 加密；重启浏览器后需解锁。不保存口令，忘记后只能重新填写 Key。</small></span></label>
+      <p id="api-vault-state" class="caption" role="status"></p>
+      <div id="api-vault" class="vault-fields" hidden>
+        <div class="field"><label for="api-password" id="api-password-label">加密口令</label><input id="api-password" type="password" autocomplete="off" placeholder="请输入加密口令" aria-describedby="api-password-hint api-password-error"><p id="api-password-hint" class="caption">12～256 个字符，不自动去除空格。请使用独立口令；无法找回。已解锁且不更换密钥时可留空。</p><p id="api-password-error" class="field-error" hidden></p></div>
+        <div id="api-password-confirm-field" class="field"><label for="api-password-confirm">确认加密口令</label><input id="api-password-confirm" type="password" autocomplete="off" placeholder="请再次输入加密口令" aria-describedby="api-password-confirm-error"><p id="api-password-confirm-error" class="field-error" hidden></p></div>
+        <div class="button-row"><button id="unlock-api-key" class="secondary" type="button" hidden>解锁密钥</button><button id="lock-api-key" class="quiet" type="button" hidden>立即锁定</button></div>
+      </div>
+      <div class="field"><label for="api-model">模型 <span class="required">必填</span></label><input id="api-model" type="text" list="api-models" placeholder="请输入模型名称或获取后选择" autocomplete="off" spellcheck="false" aria-describedby="api-model-hint api-model-error"><datalist id="api-models"></datalist><p id="api-model-hint" class="caption">可直接手填完整模型 ID（豆包可填接入点 ID）；部分厂商/套餐不提供模型列表。获取列表不代表模型可调用。</p><p id="api-model-error" class="field-error" hidden></p></div>
+      <details class="api-advanced"><summary>高级连接设置</summary><div class="field"><label for="api-protocol">接口协议</label><select id="api-protocol" aria-describedby="api-protocol-error"><option value="auto">自动 · 根据地址识别，默认 Chat Completions</option><option value="chat">Chat Completions</option><option value="responses">Responses</option></select><p id="api-protocol-error" class="field-error" hidden></p></div><div class="field"><label for="api-timeout">请求超时 <span class="unit">秒</span></label><input id="api-timeout" type="number" min="10" max="600" step="1" value="180" aria-describedby="api-timeout-hint api-timeout-error"><p id="api-timeout-hint" class="caption">默认 180 秒，可配置 10～600 秒；获取模型最多等待 30 秒。</p><p id="api-timeout-error" class="field-error" hidden></p></div><p class="caption">首版不支持原生 Anthropic / Gemini 协议；经中转站转换为 OpenAI 兼容接口后可用。</p></details>
+      <div class="endpoint-preview"><span class="caption">最终请求地址</span><code id="api-endpoint">填写调用地址后显示</code></div>
+      <div class="button-row"><button id="api-fetch-models" class="secondary" type="button">获取模型</button><button id="api-test" class="secondary" type="button">测试连接</button><button id="api-cancel" class="quiet" type="button" hidden>取消</button></div>
+      <p class="caption">连接测试只发送固定测试题，不读取当前网页；会产生少量用量。失败、超时或取消后不自动重试。</p><p id="api-status" class="caption" role="status" aria-live="polite">填写并保存后即可使用。</p>
+    </div>
   </section>
   <section class="section" aria-labelledby="batch-title">
     <h2 id="batch-title">连续作答</h2>
     <div class="inline-field"><label for="count">每批题数 <span class="caption">1～20 题</span></label><input id="count" type="number" min="1" max="20" step="1" value="1" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
     <label class="checkbox"><input id="background-run" type="checkbox" checked><span>切换标签后继续作答<small>继续操作启动任务时的练习页</small></span></label>
-    <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>仅运行样例，不自动提交答案；页面没有唯一执行入口时自动跳过</small></span></label>
+    <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>失败时将本次日志交给 AI，最多自动修正 2 次；仅执行样例，提交仍由你操作</small></span></label>
   </section>
   <section class="section" aria-labelledby="pacing-title">
     <div class="section-heading"><h2 id="pacing-title">操作节奏</h2><button id="reset-settings" class="quiet" type="button">恢复默认节奏</button></div>
@@ -58,6 +88,13 @@
     <div class="range-label"><label for="controls-opacity">显示不透明度</label><output id="opacity-value" for="controls-opacity">90%</output></div><input id="controls-opacity" type="range" aria-describedby="opacity-hint"><p id="opacity-hint" class="caption"></p>
     <button id="reset-position" class="quiet" type="button">将组件移回右下角</button><p id="position-status" class="caption" role="status"></p>
     <p class="caption">拖动图标或展开后的标题栏可移动位置。键盘聚焦图标可展开，Alt + 方向键微调，Esc 收起。关闭上方开关会立即移除已注入的组件，新打开的练习页也不再自动注入。</p>
+  </section>
+  <section class="section project-section" aria-labelledby="project-title">
+    <h2 id="project-title">帮助与项目</h2><p class="muted">使用问题、适配建议和功能想法，欢迎在项目中交流。反馈前请去除 API Key、账号信息和私有题目。</p>
+    <a class="repository-link" data-project-link="repository" target="_blank" rel="noopener noreferrer">github.com/SW1109/nexly-web-agent ↗</a>
+    <div class="resource-links"><a href="help.html" target="_blank" rel="noopener noreferrer">操作手册</a><a href="help.html#privacy" target="_blank" rel="noopener noreferrer">隐私说明</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">反馈 Bug</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">支持维护</a></div>
+    <button id="revoke-data-use" class="quiet" type="button">撤回 AI 数据使用同意</button>
+    <p class="caption">QuizMate 为社区项目，与浏览器厂商、题目平台和模型服务商无隶属关系。赞助自愿，不解锁功能。</p>
   </section>
   <div class="settings-footer"><p id="settings-status" class="caption" role="status">任务配置在下一次任务生效。</p><button id="save-settings" class="primary wide" type="button">保存设置</button></div>
 </div>

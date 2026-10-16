@@ -1,0 +1,25 @@
+import { cp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { ROOT, requireModernNode } from './project.mjs';
+import { zipDirectory } from './zip.mjs';
+requireModernNode();
+const { version } = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
+const extensionFile = `quizmate-edge-v${version}.zip`;
+const bytes = await readFile(join(ROOT, 'dist', extensionFile)).catch(() => { throw new Error('请先运行 npm run build:edge，生成当前版本的商店包'); });
+const manifest = JSON.parse(await readFile(join(ROOT, 'dist/edge/extension/manifest.json'), 'utf8'));
+if (manifest.version !== version || manifest.key || manifest.update_url) throw new Error('商店包目录不符合当前版本与来源约定，请重新构建');
+// 核对现有 ZIP 与目录相符，避免把旧 ZIP 配上新版本说明。
+if (!bytes.equals(await zipDirectory(join(ROOT, 'dist/edge/extension')))) throw new Error('商店 ZIP 与构建目录不一致，请重新运行 npm run build:edge');
+const target = join(ROOT, 'dist/edge-materials');
+await rm(target, { recursive: true, force: true }); await mkdir(target, { recursive: true });
+await mkdir(join(target, 'docs'), { recursive: true });
+await cp(join(ROOT, 'docs/edge-store'), join(target, 'docs/edge-store'), { recursive: true, filter: (path) => !path.split(/[\\/]/).some((part) => part.startsWith('.')) });
+for (const file of ['USER_GUIDE.md', 'PRIVACY.md']) await cp(join(ROOT, 'docs', file), join(target, 'docs', file));
+await writeFile(join(target, 'README.txt'), 'QuizMate Edge 上架材料\n从 docs/edge-store/SUBMISSION.md 开始。扩展 ZIP 需单独上传，不上传本材料包。\n');
+const digest = createHash('sha256').update(bytes).digest('hex');
+await writeFile(join(target, 'PACKAGE.json'), JSON.stringify({ version, extensionFile, sha256: digest, uploaded: false, certified: false }, null, 2) + '\n');
+const output = join(ROOT, 'dist', `quizmate-edge-materials-v${version}.zip`);
+const materials = await zipDirectory(target); await writeFile(output, materials);
+await writeFile(output + '.sha256', `${createHash('sha256').update(materials).digest('hex')}  quizmate-edge-materials-v${version}.zip\n`);
+console.log(`上架材料已归档：${output}\n未提交商店。缺失项请看材料中的 SUBMISSION.md。`);
