@@ -34,6 +34,7 @@ class FakeElement {
   matches(selector) { return matches(this, selector); }
   closest(selector) { for (let node = this; node; node = node.parentElement) if (matches(node, selector)) return node; return null; }
   getClientRects() { return [{ width: 10, height: 10 }]; }
+  contains(node) { return node === this || descendants(this).includes(node); }
   append() {}
   remove() { this.removed = true; }
   click() { (this.events ||= []).push('click'); if (this.onClick) this.onClick(this); }
@@ -69,7 +70,8 @@ async function readPage(body, href = 'https://example.com/practice') {
     visibilityState: 'visible', body, documentElement: body,
     createTextNode: (text) => ({ nodeType: 3, textContent: text }),
     querySelectorAll: (selector) => nodes.filter((node) => matches(node, selector)),
-    querySelector: (selector) => nodes.find((node) => matches(node, selector)) || null
+    querySelector: (selector) => nodes.find((node) => matches(node, selector)) || null,
+    getElementById: (id) => nodes.find((node) => node.id === id) || null
   };
   globalThis.window = { parent: null, frameElement: null };
   globalThis.location = { href, origin: new URL(href).origin, pathname: new URL(href).pathname };
@@ -248,4 +250,205 @@ test('a more explicit execute entry wins over a bare verb on the same page', asy
   const result = await readPage(new FakeElement({ tag: 'body', children: [new FakeElement({ tag: 'div', classes: ['problem-container'], text: '第 6 / 10 题 编程练习题：实现一个函数。', children: [codeArea('code();'), button('运行'), button('执行验证')] })] }));
   assert.equal(result.question.type, 'code');
   assert.deepEqual({ available: result.run.available, label: result.run.label, reason: result.run.reason }, { available: true, label: '执行验证', reason: '' });
+});
+
+function codeMirrorArea(value = 'const n = 1n;\nconsole.log(n);') {
+  const area = new FakeElement({ classes: ['CodeMirror'], attrs: { value } }), doc = {};
+  area.CodeMirror = {
+    getDoc: () => doc, getValue: () => area.value,
+    getOption: (name) => name === 'readOnly' && area.readOnly,
+    setValue: (code) => { area.attrs.value = code; }
+  };
+  return area;
+}
+
+async function executionPage(resultText = '', extra = [], area = codeArea('const values = new Set<number>();\nfor (const n of values) {}')) {
+  const run = button('执行代码'), submit = button('提交代码');
+  const result = new FakeElement({ attrs: { 'data-nexly-result': '' }, text: resultText });
+  const body = new FakeElement({ tag: 'body', children: [new FakeElement({ attrs: { 'data-nexly-question': '' }, text: '编程题：相反数，输出相反数对的数量。', children: [area, run, submit, result, ...extra] })] });
+  const read = await readPage(body);
+  assert.equal(read.ok, true, read.error);
+  const start = () => pageAction('run', { questionId: read.question.questionId, editorBinding: read.editor.binding, code: area.value, allowBackground: true });
+  const poll = (runToken) => pageAction('runStatus', { questionId: read.question.questionId, runToken, allowBackground: true });
+  return { area, run, submit, result, read, start, poll };
+}
+
+test('execution feedback reads the active TS2802 log, sample IO and actual code without submitting', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const old = new FakeElement({ attrs: { 'data-nexly-result': '', hidden: '' }, text: '通过\n测试输出\nold' });
+  const submitted = new FakeElement({ attrs: { role: 'tabpanel', 'data-nexly-result': '', 'aria-label': '提交结果' }, text: '通过\n测试输出\nold submitted code' });
+  const page = await executionPage('', [old, submitted]);
+  const log = "编译错误\n测试输入\n1 2 3 4 5\n测试输出\nsolution.ts(18,23): error TS2802: Type 'Set<number>' can only be iterated through with target es2015.\n预期输出\n0";
+  page.run.onClick = () => { page.result._text = log; };
+  const run = await page.start(); assert.equal(run.ok, true, run.error);
+  let status = await page.poll(run.runToken); assert.equal(status.stable, false);
+  t.mock.timers.tick(400); status = await page.poll(run.runToken);
+  assert.equal(status.fresh, true); assert.equal(status.stable, true);
+  assert.equal(status.outcome, 'failed'); assert.equal(status.summary, '编译错误');
+  assert.equal(status.result, log); assert.equal(status.code, page.area.value);
+  assert.equal((await pageAction('read')).question.questionId, page.read.question.questionId);
+  assert.equal(page.submit.events, undefined);
+  await pageAction('releaseRun', { runToken: run.runToken });
+  assert.equal(globalThis.__nexlySampleRun, undefined);
+});
+
+test('CodeMirror 5 read-only during execution waits for recovery before returning fresh TS2737 feedback', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const area = codeMirrorArea(), page = await executionPage('', [], area);
+  assert.equal(page.read.editor.kind, 'CodeMirror 5');
+  page.run.onClick = () => { area.attrs.readonly = true; page.run.attrs.disabled = true; page.result._text = '编译中'; };
+  const run = await page.start(); assert.equal(run.ok, true, run.error);
+  let status = await page.poll(run.runToken);
+  assert.equal(status.ok, true, status.error); assert.equal(status.loading, true); assert.equal(status.waitingForEditor, true);
+  const log = '编译错误\n测试输入\n1 3\n测试输出\nsolution.ts(12,19): error TS2737: BigInt literals are not available when targeting lower than ES2020.\n预期输出\n123';
+  page.result._text = log; page.run.attrs.disabled = false; t.mock.timers.tick(400);
+  status = await page.poll(run.runToken);
+  assert.equal(status.ok, true, status.error); assert.equal(status.loading, true); assert.equal(status.result, log);
+  assert.equal(area.readOnly, true); // 插件只能等待，不能解除站点设置的只读状态。
+  area.attrs.readonly = false;
+  await page.poll(run.runToken); t.mock.timers.tick(400); status = await page.poll(run.runToken);
+  assert.equal(status.ok, true, status.error); assert.equal(status.loading, false); assert.equal(status.waitingForEditor, false);
+  assert.equal(status.fresh, true); assert.equal(status.stable, true); assert.equal(status.outcome, 'failed');
+  assert.equal(status.result, log); assert.equal(status.code, area.value);
+  assert.equal((await pageAction('read')).editor.binding, page.read.editor.binding);
+  assert.equal(page.submit.events, undefined);
+  await pageAction('releaseRun', { runToken: run.runToken });
+});
+
+test('execution loading overlays and briefly hidden editors are waiting states, not manual code changes', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  for (const hide of [false, true]) {
+    const overlay = new FakeElement({ attrs: { 'aria-busy': 'false' } });
+    const page = await executionPage('', [overlay]);
+    page.run.onClick = () => {
+      if (hide) page.area._display = 'none'; else overlay.attrs['aria-busy'] = 'true';
+      page.run.attrs.disabled = true; page.result._text = '编译中';
+    };
+    const run = await page.start(), waiting = await page.poll(run.runToken);
+    assert.equal(waiting.ok, true, waiting.error); assert.equal(waiting.waitingForEditor, true);
+    page.area._display = 'block'; overlay.attrs['aria-busy'] = 'false'; page.run.attrs.disabled = false;
+    page.result._text = '通过\n测试输出\n0\n预期输出\n0';
+    await page.poll(run.runToken); t.mock.timers.tick(400);
+    const result = await page.poll(run.runToken);
+    assert.equal(result.loading, false); assert.equal(result.outcome, 'passed'); assert.equal(result.fresh, true);
+    await pageAction('releaseRun', { runToken: run.runToken });
+  }
+});
+
+test('temporary editor unavailability alone never makes an identical stale execution log fresh', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const area = codeMirrorArea(), page = await executionPage('编译错误\n测试输出\nold error TS2737', [], area);
+  page.run.onClick = () => { area.attrs.readonly = true; };
+  const run = await page.start(); let status = await page.poll(run.runToken);
+  assert.equal(status.ok, true, status.error); assert.equal(status.loading, true); assert.equal(status.fresh, false);
+  area.attrs.readonly = false; await page.poll(run.runToken); t.mock.timers.tick(400);
+  status = await page.poll(run.runToken);
+  assert.equal(status.ok, true, status.error); assert.equal(status.loading, false); assert.equal(status.fresh, false);
+  await pageAction('releaseRun', { runToken: run.runToken });
+});
+
+test('recovery still rejects actual code edits, a replaced CodeMirror document, and multiple active editors', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  for (const reason of ['edit', 'document', 'ambiguous']) {
+    const area = codeMirrorArea(), page = await executionPage('', [], area);
+    page.run.onClick = () => { area.attrs.readonly = true; page.result._text = '编译中'; };
+    const run = await page.start(); assert.equal((await page.poll(run.runToken)).ok, true);
+    area.attrs.readonly = false; page.result._text = '编译错误\n测试输出\nerror TS2737';
+    if (reason === 'edit') area.attrs.value = 'humanEdit();';
+    if (reason === 'document') area.CodeMirror.getDoc = () => ({});
+    if (reason === 'ambiguous') {
+      const other = codeArea('anotherFile();'); other.parentElement = area.parentElement; area.parentElement.children.push(other);
+    }
+    const result = await page.poll(run.runToken);
+    assert.equal(result.ok, false);
+    assert.match(result.error, reason === 'edit' ? /代码已变化/ : reason === 'document' ? /编辑器实例或代码文件已切换/ : /多个活动代码区域/);
+    await pageAction('releaseRun', { runToken: run.runToken });
+  }
+});
+
+test('success classification ignores Error/Wrong Answer in normal sample output and excludes ambiguous results', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const page = await executionPage();
+  page.run.onClick = () => { page.result._text = '通过\n测试输出\nError Wrong Answer\n预期输出\nError Wrong Answer'; };
+  const run = await page.start(); t.mock.timers.tick(400);
+  assert.equal((await page.poll(run.runToken)).outcome, 'passed');
+  await pageAction('releaseRun', { runToken: run.runToken });
+  const other = new FakeElement({ attrs: { 'data-nexly-result': '' }, text: '运行错误\n测试输出\nother' });
+  const ambiguous = await executionPage('编译错误\n测试输出\nold', [other]);
+  const pending = await ambiguous.start(); t.mock.timers.tick(400);
+  const status = await ambiguous.poll(pending.runToken);
+  assert.equal(status.outcome, 'unknown'); assert.equal(status.result, '');
+  await pageAction('releaseRun', { runToken: pending.runToken });
+});
+
+test('identical stale logs are not fresh; a short observed loading cycle permits identical new failures and is cleaned up', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+  let callback, disconnects = 0;
+  const previous = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { constructor(fn) { callback = fn; } observe() {} disconnect() { disconnects++; } };
+  t.after(() => { globalThis.MutationObserver = previous; });
+  const page = await executionPage('编译错误\n测试输出\nerror TS2802');
+  const run = await page.start(); t.mock.timers.tick(400);
+  assert.equal((await page.poll(run.runToken)).fresh, false);
+  page.run.attrs.disabled = true; callback();
+  page.run.attrs.disabled = false; callback();
+  t.mock.timers.tick(400);
+  const status = await page.poll(run.runToken);
+  assert.equal(status.fresh, true); assert.equal(status.outcome, 'failed');
+  // 错 token 不能释放当前执行，新一轮执行会主动释放上一轮观察器。
+  await pageAction('releaseRun', { runToken: 'wrong' }); assert.equal(disconnects, 0);
+  const next = await page.start(); assert.equal(disconnects, 1);
+  assert.equal((await page.poll(run.runToken)).ok, false);
+  t.mock.timers.tick(65000); assert.equal(globalThis.__nexlySampleRun, undefined); assert.equal(disconnects, 2);
+  assert.equal((await page.poll(next.runToken)).ok, false);
+});
+
+test('feedback refuses user code edits and bounds logs without truncating executed code', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const page = await executionPage();
+  page.run.onClick = () => { page.result._text = '编译错误\n测试输出\n' + 'e'.repeat(17000); };
+  const run = await page.start(); t.mock.timers.tick(400);
+  const status = await page.poll(run.runToken);
+  assert.equal(status.result.length, 16000); assert.match(status.result, /已截断/);
+  assert.equal(status.code, page.area.value);
+  page.area.attrs.value = 'console.log("manual");';
+  const changed = await page.poll(run.runToken);
+  assert.equal(changed.ok, false); assert.match(changed.error, /代码已变化/);
+  await pageAction('releaseRun', { runToken: run.runToken });
+});
+
+test('partial pass counts and standalone compiler diagnostics cannot be mistaken for success', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  for (const [log, expected] of [
+    ['通过率：0%\n测试输出\n1\n预期输出\n0', 'failed'],
+    ['1/2 用例通过\n测试输出\n1\n预期输出\n0', 'failed'],
+    ['0/0 用例通过\n测试输出\n', 'unknown'],
+    ['执行成功\n测试输出\n1\n预期输出\n0', 'unknown'],
+    ['执行结果\nsolution.ts(18,23): error TS2802: Set<number>', 'failed']
+  ]) {
+    const page = await executionPage(); page.run.onClick = () => { page.result._text = log; };
+    const run = await page.start(); t.mock.timers.tick(400);
+    assert.equal((await page.poll(run.runToken)).outcome, expected, log);
+    await pageAction('releaseRun', { runToken: run.runToken });
+  }
+});
+
+test('the first repair fragment checks the failed code atomically before any editor write', async () => {
+  const page = await executionPage(), expectedCode = page.area.value;
+  page.area.attrs.value = 'humanInTheGap();';
+  const result = await pageAction('fillStep', { questionId: page.read.question.questionId, editorBinding: page.read.editor.binding, expectedCode, progress: { started: false, offset: 0 }, answer: { questionId: page.read.question.questionId, type: 'code', code: 'repaired();' }, allowBackground: true });
+  assert.equal(result.ok, false); assert.match(result.error, /修正写入前代码已被人工更改/);
+  assert.equal(page.area.value, 'humanInTheGap();'); assert.equal(page.area.events, undefined);
+});
+
+test('nested output tabs retain their enclosing execution status instead of losing the compiler error', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const page = await executionPage();
+  const nested = new FakeElement({ attrs: { role: 'tabpanel' }, text: '测试输出\nerror TS2802\n预期输出\n0' });
+  page.result.children.push(nested); nested.parentElement = page.result;
+  page.run.onClick = () => { page.result._text = '编译错误\n' + nested._text; };
+  const run = await page.start(); t.mock.timers.tick(400);
+  const result = await page.poll(run.runToken);
+  assert.equal(result.outcome, 'failed'); assert.match(result.result, /编译错误/);
+  await pageAction('releaseRun', { runToken: run.runToken });
 });

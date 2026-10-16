@@ -1,9 +1,9 @@
 {
-  "name": "nexly-web-agent",
-  "version": "0.3.0",
+  "name": "quiz-mate",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Chrome 网页练习助手，通过 Native Messaging 调用本地 Codex / Claude Code / Gemini CLI",
+  "description": "QuizMate 智答伴侣：Chrome / Edge AI 练习助手，支持本地 CLI 与 OpenAI 兼容 API",
   "engines": {
     "node": ">=22"
   },
@@ -14,7 +14,9 @@
     "test": "node --test tests/*.test.mjs",
     "doctor": "node scripts/doctor.mjs",
     "setup:native": "node scripts/install-native.mjs",
-    "uninstall:native": "node scripts/uninstall-native.mjs"
+    "uninstall:native": "node scripts/uninstall-native.mjs",
+    "build:edge": "node scripts/build.mjs --edge",
+    "pack:edge": "node scripts/package-edge.mjs"
   },
   "repository": {
     "type": "git",

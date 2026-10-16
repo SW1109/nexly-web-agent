@@ -1,13 +1,18 @@
-import { PROVIDERS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
+import { DATA_CONSENT_VERSION } from './lib/project-info.js';
+import { PROVIDERS, LIMITS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
 import { pageAction } from './lib/page.js';
-import { nativeRequest, cancelNative } from './lib/native.js';
+import { prepareSolver, solverHealth, apiProbe } from './lib/solver.js';
+import { connectionMode } from './lib/api-config.js';
+import { protectApiStorage, apiSettings, saveApiSettings, clearApiKey, unlockApiKey, lockApiKey } from './lib/api-settings.js';
 import { validatePacing } from './lib/pacing.js';
 import { installPageControls, removePageControls } from './lib/page-controls.js';
 import { navigationAction } from './lib/navigation.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, validateAppearance, validatePosition } from './lib/appearance.js';
 
-const emptyState = () => ({ phase: 'idle', busy: false, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', elapsedSeconds: 0 });
+const emptyState = () => ({ phase: 'idle', busy: false, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', connectionMode: 'local', model: '', elapsedSeconds: 0 });
 let state = emptyState(), controller = null;
+const probes = new Map();
+void protectApiStorage().then(() => apiSettings()).catch(() => {});
 const hydrated = chrome.storage.session.get('taskState').then(({ taskState }) => {
   if (taskState) state = { ...emptyState(), ...taskState, busy: false, paused: false, pauseReason: null, phase: taskState.busy ? 'interrupted' : taskState.phase, error: taskState.busy ? '浏览器后台曾重启，任务已停止。请重新读取或求解。' : taskState.error };
 });
@@ -21,21 +26,22 @@ async function publish(patch = {}, message = '') {
   }
 }
 function publicPageState(target) {
-  if (state.target?.tabId !== target.tabId || state.target?.frameId !== target.frameId) return { phase: 'idle', busy: false, paused: false, completed: 0, error: '', typingProgress: null };
-  const { phase, busy, paused, completed, error, typingProgress, runInBackground } = state;
-  return { phase, busy, paused, completed, error, typingProgress, runInBackground, questionTitle: state.question?.title || '' };
+  if (state.target?.tabId !== target.tabId || state.target?.frameId !== target.frameId) return { phase: 'idle', busy: false, paused: false, completed: 0, error: '', typingProgress: null, elapsedSeconds: 0 };
+  const { phase, busy, paused, completed, error, typingProgress, runInBackground, connectionMode, elapsedSeconds } = state;
+  return { phase, busy, paused, completed, error, typingProgress, runInBackground, connectionMode, elapsedSeconds: elapsedSeconds || 0, questionTitle: state.question?.title || '' };
 }
 async function preferences(overrides = {}) {
-  const saved = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground']);
+  const saved = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'connectionMode']);
+  const mode = connectionMode(overrides.connectionMode ?? saved.connectionMode ?? 'local');
   const provider = overrides.provider ?? saved.provider ?? 'codex';
   const count = Number(overrides.count ?? saved.count ?? 1), run = overrides.run ?? saved.runAfterFill ?? false;
-  if (!PROVIDERS.includes(provider)) throw new Error('请选择受支持的本地 CLI');
+  if (mode === 'local' && !PROVIDERS.includes(provider)) throw new Error('请选择受支持的本地 CLI');
   if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error('每批题数应为 1～20');
   if (typeof run !== 'boolean') throw new Error('执行样例选项必须为 true 或 false');
   const runInBackground = overrides.runInBackground ?? saved.runInBackground ?? true;
   if (typeof runInBackground !== 'boolean') throw new Error('后台运行选项必须为 true 或 false');
   const pacing = validatePacing(overrides.pacing === undefined ? saved.pacing : overrides.pacing);
-  return { provider, count, run, pacing, runInBackground };
+  return { provider, count, run, pacing, runInBackground, connectionMode: mode };
 }
 async function attachControls(target) {
   const saved = await chrome.storage.local.get(['controlsAppearance', 'controlsPosition']);
@@ -48,7 +54,7 @@ async function attachControls(target) {
   const binding = { ...target, documentId: result.documentId || target.documentId || null };
   await publish({ controls: { ...state.controls, [target.tabId]: binding } });
 }
-/** 练习页加载后自动启用页内组件：不必先打开侧栏（避免因此切屏），也只在已授权的练习站点生效。 */
+/** 仅在已授权的练习站点自动显示入口，不更改网站的焦点与计时规则。 */
 const autoAttachPending = new Set();
 async function autoAttach(tabId) {
   if (controller || autoAttachPending.has(tabId)) return false;
@@ -92,7 +98,7 @@ async function frameFocused(task) {
   return focus.visible && focus.focused;
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// “无法验证”与会“验证不通过”是两件事：前者跳过并继续下一题，后者才停止连续作答。
+// 无法验证不等于样例通过；编程题停留当前页，交给人工核对和提交。
 const verifyUnavailable = (message) => Object.assign(new Error(message), { code: 'VERIFY_UNAVAILABLE' });
 // 找不到（或有多个）换题入口时，编程题可以退回等待人工换题，而不是中断整批任务。
 const navigationUnavailable = (message) => Object.assign(new Error(message), { code: 'NAVIGATION_UNAVAILABLE' });
@@ -128,7 +134,7 @@ async function resumeTask(task, manual = false) {
     return false;
   }
   task.paused = false; task.pauseReason = null;
-  await publish({ paused: false, pauseReason: null, phase: task.pendingSnapshot ? 'reading' : task.nativeId ? 'solving' : task.resumePhase || 'ready' }, manual ? '继续当前任务。' : '已回到原练习页，自动继续。');
+  await publish({ paused: false, pauseReason: null, phase: task.pendingSnapshot ? 'reading' : task.request ? 'solving' : task.resumePhase || 'ready' }, manual ? '继续当前任务。' : '已回到原练习页，自动继续。');
   return true;
 }
 async function gate(task) {
@@ -223,8 +229,9 @@ async function act(target, action, payload = {}) {
 async function ensureSame(target, questionId) {
   const current = await act(target, 'read');
   if (current.question.questionId !== questionId) throw Object.assign(new Error('题目已变化，切换到新题'), { code: 'QUESTION_CHANGED' });
+  return current;
 }
-async function fillCurrent(task) {
+async function fillCurrent(task, expectedCode) {
   if (task) await gate(task);
   const { target, question, answer } = state;
   if (!target || !question || !answer) throw new Error('请先读取题目并完成求解');
@@ -237,7 +244,7 @@ async function fillCurrent(task) {
   while (true) {
     await gate(task);
     if (nextAction) await pacedWait(task, task.pacing.actionIntervalMs);
-    const result = await act(target, 'fillStep', { questionId: question.questionId, editorBinding: state.editor?.binding || null, answer, progress, pacing: task.pacing, allowBackground: task.runInBackground });
+    const result = await act(target, 'fillStep', { questionId: question.questionId, editorBinding: state.editor?.binding || null, answer, progress, pacing: task.pacing, allowBackground: task.runInBackground, ...(expectedCode === undefined ? {} : { expectedCode }) });
     assertCurrent(task);
     if (result.waitingForFocus && !result.done) {
       // 保留本片段已经输入的进度，回到原页面后从当前位置继续。
@@ -261,40 +268,95 @@ async function runSamples(task) {
   const { question, target, answer } = state;
   if (question?.type !== 'code' || !answer) throw new Error('只有已写入的编程题可以执行样例');
   if (!shouldRunSamples(question, state.run)) throw verifyUnavailable('页面没有唯一的“执行代码/执行验证”入口；不会用“提交”按钮代替，也没有把旧结果当作本次执行');
-  await ensureSame(target, question.questionId);
+  await ensureSame(target, question.questionId); assertCurrent(task);
   const deadline = Date.now() + 60000;
-  let run;
-  do {
-    if (task) await gate(task);
-    await pacedWait(task, task.pacing.actionIntervalMs);
-    try {
-      run = await act(target, 'run', { questionId: question.questionId, editorBinding: state.editor?.binding || null, code: answer.code, allowBackground: task.runInBackground });
-    } catch (error) {
-      if (error.code) throw error;
-      throw verifyUnavailable(`页面没有返回可验证的执行结果：${error.message}`);
+  let run, waitingForEditor = false, editorWaitNotified = false;
+  try {
+    do {
+      await pacedWait(task, task.pacing.actionIntervalMs);
+      try { run = await act(target, 'run', { questionId: question.questionId, editorBinding: state.editor?.binding || null, code: answer.code, allowBackground: task.runInBackground }); }
+      catch (error) { if (error.code) throw error; throw verifyUnavailable(`页面没有返回可验证的执行结果：${error.message}`); }
+      assertCurrent(task);
+      if (run.waiting) { await publish({ phase: 'waiting' }, '平台暂不允许执行，正在等待按钮恢复…'); await sleep(1000); }
+    } while (run.waiting && Date.now() < deadline);
+    if (run.waiting) throw verifyUnavailable('等待执行按钮超时，未跳过平台等待限制');
+    if (typeof run.runToken !== 'string' || !run.runToken) throw verifyUnavailable('页面没有提供本次执行标识，未读取旧结果');
+    await publish({ phase: 'testing' }, '已点击执行代码，等待页面结果；未提交答案。');
+    while (Date.now() < deadline) {
+      await sleep(500); await gate(task);
+      let result;
+      try { result = await act(target, 'runStatus', { questionId: question.questionId, runToken: run.runToken, allowBackground: task.runInBackground }); }
+      catch (error) { if (error.code) throw error; throw verifyUnavailable(`读取页面执行结果失败：${error.message}`); }
+      assertCurrent(task);
+      waitingForEditor = result.waitingForEditor === true;
+      if (waitingForEditor && !editorWaitNotified) {
+        editorWaitNotified = true;
+        await publish({ phase: 'testing' }, '执行期间编辑器暂不可用，正在等待原编辑区恢复后核对代码和本次结果；未解除页面限制。');
+      }
+      if (!result.loading && result.result && result.fresh === true && result.stable === true) {
+        await publish({ phase: 'filled' }, `页面执行结果：${result.summary || result.result.slice(0, 180)}`);
+        return result;
+      }
     }
-    if (run.waiting) { await publish({ phase: 'waiting' }, '平台暂不允许执行，正在等待按钮恢复…'); await sleep(1000); }
-  } while (run.waiting && Date.now() < deadline);
-  if (run.waiting) throw verifyUnavailable('等待执行按钮超时，未跳过平台等待限制');
-  await publish({ phase: 'testing' }, '已点击执行代码，等待页面结果；未提交答案。');
-  let sawLoading = false;
-  while (Date.now() < deadline) {
-    await sleep(500);
-    if (task) await gate(task);
-    let result;
-    try { result = await act(target, 'runStatus', { questionId: question.questionId, allowBackground: task.runInBackground }); }
-    catch (error) {
-      if (error.code) throw error;
-      throw verifyUnavailable(`读取页面执行结果失败：${error.message}`);
-    }
-    sawLoading ||= result.loading;
-    if (!result.loading && result.result && (result.result !== run.previousResult || sawLoading)) {
-      await publish({ phase: 'filled' }, `页面执行结果：${result.result}`);
-      return result;
-    }
+    throw verifyUnavailable(waitingForEditor ? '执行期间编辑器一直未恢复可验证状态，无法核对当前代码；未自动修正，请恢复原编辑区后重试' : '未能确认本次执行的新结果；没有将旧结果当成本次成功');
+  } finally {
+    // 换题、停止和异常同样释放监听；后台意外中断时页面内还有 65 秒兜底释放。
+    if (run?.runToken) await act(target, 'releaseRun', { runToken: run.runToken }).catch(() => {});
   }
-  throw verifyUnavailable('未能确认本次执行的新结果；没有将旧结果当成本次成功');
 }
+async function requestAnswer(task, question, target) {
+  const request = task.solver.solve(question, (progress) => {
+    if (controller === task && !task.stopped && !task.pendingSnapshot) void publish({ elapsedSeconds: progress.elapsedSeconds });
+  });
+  task.request = request;
+  let solved;
+  try { solved = await request.promise; } finally { if (task.request === request) task.request = null; }
+  assertCurrent(task);
+  await ensureSame(target, question.questionId); assertCurrent(task);
+  const answer = validateAnswer(solved.answer, question);
+  if (task.paused) task.resumePhase = 'ready';
+  await publish({ answer, phase: task.paused ? 'paused' : 'ready' }, `答案已返回，置信度 ${Math.round(answer.confidence * 100)}%。`);
+  return answer;
+}
+async function fillWithDelay(task, beforeFill, expectedCode) {
+  if (task.pacing.answerDelayMs) {
+    if (task.paused) task.resumePhase = 'delaying';
+    await publish({ phase: task.paused ? 'paused' : 'delaying' }, `按配置等待 ${task.pacing.answerDelayMs / 1000} 秒后填写。`);
+    await pacedWait(task, task.pacing.answerDelayMs);
+  }
+  if (beforeFill) await beforeFill();
+  await fillCurrent(task, expectedCode);
+}
+async function verifyAndRepair(task, snapshot) {
+  const normalizeCode = (code) => code.replace(/\r\n/g, '\n');
+  const triedCodes = new Set(state.answer?.code ? [normalizeCode(state.answer.code)] : []);
+  for (let attempt = 0; ; attempt++) {
+    const execution = await runSamples(task);
+    if (execution.outcome === 'passed') return;
+    if (execution.outcome !== 'failed') throw verifyUnavailable('页面结果没有明确报告样例通过或失败，未自动修正');
+    if (attempt >= LIMITS.repairAttempts) throw new Error(`页面样例仍未通过，已自动修正 ${LIMITS.repairAttempts} 次；已停止，请人工检查代码和报错后再提交`);
+    if (!execution.code || !execution.result?.trim() || execution.hasDetails === false) throw verifyUnavailable('没有读到本次实际执行代码或详细错误日志，未自动修正');
+    const ensureUnedited = async () => {
+      await gate(task);
+      const current = await ensureSame(snapshot.target, snapshot.question.questionId); assertCurrent(task);
+      if (!current.editor.supported || (snapshot.editor?.binding && current.editor.binding !== snapshot.editor.binding) || normalizeCode(current.question.starterCode) !== normalizeCode(execution.code)) throw new Error('代码或编辑器已由人工更改，停止自动修正，避免覆盖你的修改');
+    };
+    await ensureUnedited();
+    const question = validateQuestion({ ...snapshot.question, executionFeedback: { attempt: attempt + 1, code: execution.code, result: execution.result } });
+    // 手动“执行样例”也能修正，但仅在确有失败反馈时才初始化求解器。
+    if (!task.solver) { task.solver = await prepareSolver(task.preferences); assertCurrent(task); }
+    await gate(task);
+    await publish({ phase: 'solving', elapsedSeconds: 0 }, `样例未通过，已读取错误日志，交给 AI 自动修正 ${attempt + 1}/${LIMITS.repairAttempts}；只重新执行样例，不提交代码。`);
+    const answer = await requestAnswer(task, question, snapshot.target);
+    await ensureUnedited();
+    if (answer.confidence < 0.8) throw new Error('修正答案置信度不足 80%，未覆盖当前代码，请人工复核');
+    const code = normalizeCode(answer.code);
+    if (triedCodes.has(code)) throw new Error('AI 返回的修正代码与已尝试代码相同，已停止重复执行，请人工检查');
+    triedCodes.add(code);
+    await fillWithDelay(task, ensureUnedited, execution.code);
+  }
+}
+
 let synchronizing = false;
 async function synchronizeQuestion(tabId) {
   if (state.target?.tabId !== tabId) return true;
@@ -311,7 +373,7 @@ async function synchronizeQuestion(tabId) {
     const task = controller?.tabId === tabId ? controller : null;
     if (task && !task.navigating) {
       task.pendingSnapshot = snapshot;
-      if (task.nativeId && !task.cancelWait) task.cancelWait = cancelNative(task.nativeId).catch(() => {});
+      if (task.request && !task.cancelWait) task.cancelWait = Promise.resolve(task.request.cancel()).catch(() => {});
     }
     await publish({ ...snapshot, answer: null, typingProgress: null, elapsedSeconds: 0, phase: task?.paused ? 'paused' : 'read', error: '' }, '检测到题目变化，已同步新题并清除旧答案。');
     await attachControls(snapshot.target);
@@ -401,26 +463,11 @@ async function solveSequence(task, options) {
         await attachControls(snapshot.target); assertCurrent(task);
         if (snapshot.question.type === 'code' && !snapshot.editor.supported && options.fill) throw new Error(snapshot.editor.error);
         await gate(task);
-        await publish({ phase: 'solving' }, `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
-        const request = nativeRequest('solve', { provider: task.provider, question: snapshot.question }, (progress) => {
-          if (controller === task && !task.stopped && !task.pendingSnapshot) void publish({ elapsedSeconds: progress.elapsedSeconds });
-        });
-        task.nativeId = request.requestId;
-        let solved;
-        try { solved = await request.promise; } finally { if (task.nativeId === request.requestId) task.nativeId = null; }
-        assertCurrent(task);
-        await ensureSame(snapshot.target, snapshot.question.questionId); assertCurrent(task);
-        const answer = validateAnswer(solved.answer, snapshot.question);
-        if (task.paused) task.resumePhase = 'ready';
-        await publish({ answer, phase: task.paused ? 'paused' : 'ready' }, `答案已返回，置信度 ${Math.round(answer.confidence * 100)}%。`);
+        await publish({ phase: 'solving' }, task.connectionMode === 'api' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
+        const answer = await requestAnswer(task, snapshot.question, snapshot.target);
         if (!options.fill) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '仅预览模式：答案已返回，未填写网页。'); break; }
         if (answer.confidence < 0.8) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '置信度不足 80%，停止自动填写，请人工复核。'); break; }
-        if (task.pacing.answerDelayMs) {
-          if (task.paused) task.resumePhase = 'delaying';
-          await publish({ phase: task.paused ? 'paused' : 'delaying' }, `按配置等待 ${task.pacing.answerDelayMs / 1000} 秒后填写。`);
-          await pacedWait(task, task.pacing.answerDelayMs);
-        }
-        try { await fillCurrent(task); }
+        try { await fillWithDelay(task); }
         catch (error) {
           // 页面拒绝写入时不空转：记录原因并跳到下一题继续本批，连续失败超过上限才停止，避免一路跳过整场考试。
           if (controller !== task || task.stopped || error.code === 'QUESTION_CHANGED' || error.code === 'PAGE_NOT_READY') throw error;
@@ -447,39 +494,22 @@ async function solveSequence(task, options) {
         skipped = 0;
         visited.add(snapshot.question.questionId); completed++; batchCompleted++;
         await publish({ completed });
-        let verificationSkipped = false;
         if (options.run) {
           if (state.question.type !== 'code') await publish({}, '当前题目不是编程题，已跳过执行样例。');
-          // 页面没有唯一执行入口时只提示，不把整批任务判成失败，也绝不退化去点“提交”。
           else if (!shouldRunSamples(state.question, state.run)) await publish({}, state.run?.reason === 'ambiguous'
             ? '页面存在多个同级执行入口，无法确定目标，已跳过执行样例；请人工运行代码并核对。'
             : '页面没有唯一的“执行代码/执行验证”入口，已跳过执行样例；请人工运行代码并核对。');
           else {
-            try {
-              const execution = await runSamples(task);
-              if (/不通过|未通过|失败|错误|超时|异常|Wrong Answer|Error|Failed/i.test(execution.result)) throw new Error('页面样例未通过，已停止连续作答');
-              if (!/通过|Accepted|Success/i.test(execution.result)) throw new Error('页面样例结果未能确认通过，已停止连续作答');
-            } catch (error) {
-              // 页面无法给出可验证结果时跳过验证并继续下一题；只有“样例不通过”才停止连续作答。
+            try { await verifyAndRepair(task, snapshot); }
+            catch (error) {
               if (error.code !== 'VERIFY_UNAVAILABLE') throw error;
-              verificationSkipped = true;
-              await publish({ phase: 'filled' }, `无法确认页面验证结果（${error.message}）已跳过验证并继续下一题；代码已写入但未提交，需要时请人工核对。`);
+              await publish({ phase: 'filled' }, `无法确认页面验证结果（${error.message}）；代码已写入但未提交，停留当前题等待人工核对。`);
             }
           }
         }
-        // 编程题必须留给用户提交；只有验证无法完成、需要自动换题时才不在这里等待人工提交。
-        if (snapshot.question.type === 'code' && !verificationSkipped) await waitForManualQuestion(task);
-        if (batchCompleted < options.count) {
-          if (verificationSkipped) {
-            // 验证不可用时自动换题；找不到明确入口就退回人工换题，不因为按钮缺失中断整批任务。
-            try { await nextQuestion(task, snapshot.question.questionId, visited); }
-            catch (error) {
-              if (error.code !== 'NAVIGATION_UNAVAILABLE') throw error;
-              await publish({}, `${error.message}；等待你手动切换到下一题。`);
-              await waitForManualQuestion(task);
-            }
-          } else await nextQuestion(task, snapshot.question.questionId, visited);
-        }
+        // 编程题无论通过或无法验证，都留给用户提交，绝不因日志缺失自动跳走。
+        if (snapshot.question.type === 'code') await waitForManualQuestion(task);
+        if (batchCompleted < options.count) await nextQuestion(task, snapshot.question.questionId, visited);
       } catch (error) {
         if (controller !== task || task.stopped) throw error;
         if (error.code === 'PAGE_NOT_READY') throw error;
@@ -488,7 +518,7 @@ async function solveSequence(task, options) {
         if (!isChanged) throw error;
         if (task.manualBoundary) { batchCompleted = 0; visited.clear(); replacements = 0; task.manualBoundary = false; }
         else if (++replacements > 10) throw new Error('题目连续变化超过 10 次，已停止。请稳定页面后重新开始');
-        if (task.nativeId && !task.cancelWait) task.cancelWait = cancelNative(task.nativeId).catch(() => {});
+        if (task.request && !task.cancelWait) task.cancelWait = Promise.resolve(task.request.cancel()).catch(() => {});
         if (task.cancelWait) await task.cancelWait;
         if (controller !== task || task.stopped) throw new Error('任务已停止');
         task.pendingSnapshot = null; task.cancelWait = null; task.currentQuestionId = null; task.target = replacement.target;
@@ -503,12 +533,50 @@ async function solveSequence(task, options) {
     }
   } catch (error) {
     if (controller === task && !task.stopped) await publish({ busy: false, paused: false, pauseReason: null, phase: 'error', error: error.message }, error.message);
-  } finally { if (controller === task) controller = null; }
+  } finally { task.solver?.release(); if (controller === task) controller = null; }
 }
 async function handle(message, pageTarget = null) {
   await hydrated;
   if (message.action === 'state') return state;
-  if (message.action === 'health') return nativeRequest('health').promise;
+  if (message.action === 'acceptDataUse') {
+    if (message.version !== DATA_CONSENT_VERSION) throw new Error('请重新阅读最新的数据使用说明');
+    await chrome.storage.local.set({ dataConsentVersion: DATA_CONSENT_VERSION });
+    return { accepted: true };
+  }
+  if (message.action === 'revokeDataUse') {
+    if (state.busy || probes.size) throw new Error('请先停止任务或连接测试，再撤回同意');
+    await chrome.storage.local.remove('dataConsentVersion');
+    return { accepted: false };
+  }
+  if (message.action === 'clearHistory') {
+    if (state.busy || probes.size) throw new Error('请先停止任务或连接测试，再清除练习记录');
+    const controls = state.controls;
+    state = { ...emptyState(), controls };
+    await publish();
+    return state;
+  }
+  if (message.action === 'health') {
+    const saved = await chrome.storage.local.get('connectionMode');
+    return solverHealth(message.connectionMode ?? saved.connectionMode ?? 'local');
+  }
+  if (message.action === 'apiSettings') return apiSettings();
+  if (message.action === 'apiCancel') { probes.get(message.probeId)?.cancel(); return { canceled: true }; }
+  if (['saveApiSettings', 'clearApiKey', 'unlockApiKey', 'lockApiKey', 'apiModels', 'apiTest'].includes(message.action)) {
+    if (state.busy || probes.size) throw new Error('已有任务或 API 测试运行，请先停止或等待完成');
+    if (message.action === 'saveApiSettings') return saveApiSettings(message.config, { key: message.key, rememberKey: message.rememberKey, password: message.password });
+    if (message.action === 'clearApiKey') return clearApiKey();
+    if (message.action === 'unlockApiKey') return unlockApiKey(message.password);
+    if (message.action === 'lockApiKey') return lockApiKey();
+    if (typeof message.probeId !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(message.probeId)) throw new Error('无效的 API 测试标识');
+    // 先占位，防止两个侧栏同时通过异步配置检查后重复发起付费测试。
+    let canceled = false, request;
+    probes.set(message.probeId, { cancel() { canceled = true; request?.cancel(); } });
+    try {
+      request = await apiProbe(message.action === 'apiModels' ? 'models' : 'test', message.config, message.key);
+      if (canceled) request.cancel();
+      return await request.promise;
+    } finally { probes.delete(message.probeId); }
+  }
   if (message.action === 'moveControls') {
     await chrome.storage.local.set({ controlsPosition: validatePosition(message.position) });
     return state;
@@ -524,10 +592,10 @@ async function handle(message, pageTarget = null) {
   }
   if (message.action === 'stop') {
     const task = controller;
-    if (task) { task.stopped = true; controller = null; if (task.nativeId) void cancelNative(task.nativeId).catch(() => {}); }
+    if (task) { task.stopped = true; controller = null; task.request?.cancel(); task.solver?.release(); }
     await publish({ busy: false, paused: false, pauseReason: null, phase: 'stopped' }, '任务已停止，保留已填写内容。'); return state;
   }
-  if (state.busy) throw new Error('已有任务运行，请先暂停或停止');
+  if (state.busy || probes.size) throw new Error('已有任务或 API 测试运行，请先停止或等待完成');
   if (message.action === 'enableControls') {
     const tab = await activeTab(), snapshot = await scan(tab.id);
     await publish({ ...snapshot, answer: null, phase: 'read', error: '' });
@@ -541,13 +609,15 @@ async function handle(message, pageTarget = null) {
   }
   if (message.action === 'fill' || message.action === 'run') {
     if (!state.target) throw new Error('请先读取题目');
-    const task = { id: crypto.randomUUID(), tabId: state.target.tabId, target: state.target, currentQuestionId: state.question?.questionId, paused: false, stopped: false, nativeId: null };
+    const task = { id: crypto.randomUUID(), tabId: state.target.tabId, target: state.target, currentQuestionId: state.question?.questionId, paused: false, stopped: false, request: null };
     controller = task;
     await publish({ busy: true, error: '' });
     try {
-      const prefs = await preferences(); Object.assign(task, { pacing: prefs.pacing, runInBackground: prefs.runInBackground }); assertCurrent(task);
-      if (message.action === 'fill') await fillCurrent(task); else await runSamples(task);
+      const prefs = await preferences(); Object.assign(task, { pacing: prefs.pacing, runInBackground: prefs.runInBackground, provider: prefs.provider, connectionMode: prefs.connectionMode, preferences: prefs }); assertCurrent(task);
+      if (message.action === 'fill') await fillCurrent(task);
+      else { await verifyAndRepair(task, { question: state.question, editor: state.editor, target: state.target }); await publish({}, '页面样例已通过，请人工提交代码并换题；未自动提交。'); }
     } catch (error) {
+      if (controller !== task || task.stopped) return state;
       if (controller === task && !task.stopped) {
         const replacement = task.pendingSnapshot || await scan(task.tabId).catch(() => null);
         if (replacement && replacement.question.questionId !== task.currentQuestionId) {
@@ -556,31 +626,36 @@ async function handle(message, pageTarget = null) {
           return state;
         }
       }
+      // 手动执行失败也要结束 testing/solving 状态，不能留下“等待结果”误导用户。
+      await publish({ phase: 'error', error: error.message, typingProgress: null }, error.message);
       throw error;
     }
-    finally { if (controller === task) { controller = null; await publish({ busy: false, paused: false, pauseReason: null }); } }
+    finally { task.solver?.release(); if (controller === task) { controller = null; await publish({ busy: false, paused: false, pauseReason: null }); } }
     return state;
   }
   if (message.action === 'start') {
     if (message.fill !== undefined && typeof message.fill !== 'boolean') throw new Error('自动填写选项必须为 true 或 false');
     const autoFill = message.fill !== false;
-    const task = { id: crypto.randomUUID(), tabId: null, target: null, paused: false, stopped: false, nativeId: null };
+    const task = { id: crypto.randomUUID(), tabId: null, target: null, paused: false, stopped: false, request: null };
     controller = task;
     await publish({ busy: true, paused: false, pauseReason: null, autoFill, error: '', completed: 0, typingProgress: null, phase: 'reading', answer: null });
     try {
       const prefs = await preferences(message), tab = await activeTab(); assertCurrent(task);
       if (pageTarget && pageTarget.tabId !== tab.id) throw new Error('请在当前练习页内开始任务');
-      Object.assign(task, { tabId: tab.id, provider: prefs.provider, pacing: prefs.pacing, runInBackground: prefs.runInBackground });
-      await publish({ provider: prefs.provider, runInBackground: prefs.runInBackground });
+      Object.assign(task, { tabId: tab.id, provider: prefs.provider, pacing: prefs.pacing, runInBackground: prefs.runInBackground, connectionMode: prefs.connectionMode, preferences: prefs });
+      task.solver = await prepareSolver(prefs);
+      if (controller !== task || task.stopped) { task.solver.release(); throw new Error('任务已停止'); }
+      await publish({ provider: prefs.provider, connectionMode: prefs.connectionMode, model: task.solver.model || '', runInBackground: prefs.runInBackground });
       void solveSequence(task, { fill: autoFill, run: prefs.run, count: autoFill ? prefs.count : 1 });
       return state;
-    } catch (error) { if (controller === task) { controller = null; await publish({ busy: false, phase: 'error', error: error.message }); } throw error; }
+    } catch (error) { task.solver?.release(); if (controller === task) { controller = null; await publish({ busy: false, phase: 'error', error: error.message }); } throw error; }
   }
   throw new Error('不支持的扩展操作');
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (message.type !== 'command') return false;
-  const panel = !sender.tab && sender.url?.startsWith(chrome.runtime.getURL(''));
+  if (!message || typeof message !== 'object' || message.type !== 'command') return false;
+  // 侧栏和独立打开的扩展面板同属可信页面；严格匹配面板 URL，不能只凭 extension id 放行网页。
+  const panel = sender.url?.split(/[?#]/)[0] === chrome.runtime.getURL('panel.html');
   const page = sender.tab && message.source === 'page-controls' && ['state', 'start', 'pause', 'resume', 'stop', 'pageChanged', 'moveControls'].includes(message.action);
   if (sender.id !== chrome.runtime.id || (!panel && !page)) return false;
   (async () => {
@@ -593,7 +668,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     const data = await handle(page ? { action: message.action, ...(message.action === 'moveControls' ? { position: message.position } : {}) } : message, target);
     return page ? publicPageState(target) : data;
-  })().then((data) => respond({ ok: true, data })).catch(async (error) => { if (panel) await publish({ error: error.message }); respond({ ok: false, error: error.message }); });
+  })().then((data) => respond({ ok: true, data })).catch(async (error) => { if (panel && !['apiSettings', 'saveApiSettings', 'clearApiKey', 'unlockApiKey', 'lockApiKey', 'apiModels', 'apiTest', 'apiCancel', 'health'].includes(message.action)) await publish({ error: error.message }); respond({ ok: false, error: error.message }); });
   return true;
 });
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -628,7 +703,7 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 });
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 chrome.commands.onCommand.addListener(async (name) => {
-  if (name !== 'nexly-toggle-task') return;
+  if (name !== 'quizmate-toggle-task' && name !== 'nexly-toggle-task') return;
   try {
     await hydrated;
     const tab = await activeTab();

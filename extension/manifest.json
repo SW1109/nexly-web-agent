@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Nexly 网页练习助手",
-  "version": "0.3.0",
-  "description": "使用本地 Codex、Claude Code 或 Gemini CLI 求解网页练习，核对后填写，不自动提交。",
+  "name": "QuizMate · 智答伴侣",
+  "version": "0.4.0",
+  "description": "AI 辅助做题助手：通过本地 CLI 或 OpenAI 兼容 API 求解网页练习，核对后填写，不自动提交。",
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApVxRvAkrpStmrYKCDhlha1fs+eNjuTK91ccYte/lItovpzynZiwoKHnNtMIw/rnlxTBYT0z4SX/dZo9txqlAywoGaGqDq0fQA505DplbU0hhIKFOXEHyGOS7af/qYE79ZFmFJZa+/NfTC/SYyFcQzzfcCsvpwU+8ZMN3VEuvZNlmiWftGmf4KZ50bonH//MIbdeaTsRH7LfGbN8WeihLCuQfqrzYy6FUacHaebtr3EsbiGPM3iXzbdxrtoC9+UVrAOgo4bT8ucboGjVzfZK3wxQ+HengFGgVOrWgGCSYLF4gMIVOgtFEZUYtoIXDP7M3pdWJEhB600Kjsc+dAwSN1QIDAQAB",
   "permissions": [
@@ -11,10 +11,8 @@
     "storage",
     "sidePanel",
     "nativeMessaging",
-    "webNavigation"
-  ],
-  "host_permissions": [
-    "https://developer.huawei.com/*"
+    "webNavigation",
+    "offscreen"
   ],
   "optional_host_permissions": [
     "http://*/*",
@@ -25,7 +23,13 @@
     "type": "module"
   },
   "action": {
-    "default_title": "打开 Nexly 练习助手"
+    "default_title": "打开 QuizMate 智答伴侣",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "side_panel": {
     "default_path": "panel.html"
@@ -37,10 +41,10 @@
     "128": "icons/icon-128.png"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
   },
   "commands": {
-    "nexly-toggle-task": {
+    "quizmate-toggle-task": {
       "suggested_key": {
         "default": "Alt+Shift+N"
       },
@@ -57,5 +61,7 @@
         "https://*/*"
       ]
     }
-  ]
+  ],
+  "homepage_url": "https://github.com/SW1109/nexly-web-agent",
+  "incognito": "not_allowed"
 }

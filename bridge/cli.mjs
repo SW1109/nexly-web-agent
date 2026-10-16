@@ -70,9 +70,49 @@ export async function resolveCommand(name, config) {
   }
   throw new Error(`找不到 ${name} CLI，请先安装并在终端完成登录`);
 }
+function cliHome(provider, env = process.env, home = homedir()) {
+  const folder = provider === 'qwen' ? env.QWEN_HOME : provider === 'kimi' ? env.KIMI_SHARE_DIR : null;
+  if (folder && !isAbsolute(folder)) throw new Error(`${provider} 配置目录环境变量必须是绝对路径`);
+  return folder || join(home, '.' + provider);
+}
+function cliConfigFiles(provider, env = process.env, home = homedir()) {
+  if (provider === 'codex') return [join(env.CODEX_HOME || join(home, '.codex'), 'config.toml')];
+  if (provider === 'claude') return [join(home, '.claude/settings.json')];
+  const dir = cliHome(provider, env, home);
+  return provider === 'kimi' ? [join(dir, 'config.toml'), join(dir, 'config.json')] : [join(dir, 'settings.json'), join(dir, '.env')];
+}
 export async function configMetadata(provider) {
-  const files = provider === 'codex' ? [join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml')] : provider === 'claude' ? [join(homedir(), '.claude/settings.json')] : [join(homedir(), '.gemini/settings.json'), join(homedir(), '.gemini/.env')];
-  return Promise.all(files.map(async (file) => { try { const info = await stat(file); return { label: file.replace(homedir(), '~'), exists: true, updatedAt: info.mtime.toISOString() }; } catch { return { label: file.replace(homedir(), '~'), exists: false, updatedAt: null }; } }));
+  return Promise.all(cliConfigFiles(provider).map(async (file) => { try { const info = await stat(file); return { label: file.replace(homedir(), '~'), exists: true, updatedAt: info.mtime.toISOString() }; } catch { return { label: file.replace(homedir(), '~'), exists: false, updatedAt: null }; } }));
+}
+function qwenSystemPaths(env) {
+  const system = env.QWEN_CODE_SYSTEM_SETTINGS_PATH || (platform() === 'darwin' ? '/Library/Application Support/QwenCode/settings.json' : platform() === 'win32' ? 'C:\\ProgramData\\qwen-code\\settings.json' : '/etc/qwen-code/settings.json');
+  return [system, env.QWEN_CODE_SYSTEM_DEFAULTS_PATH || join(dirname(system), 'system-defaults.json')];
+}
+export async function assertCliIsolation(provider, env = process.env, home = homedir()) {
+  if (!['qwen', 'kimi'].includes(provider)) return;
+  const files = cliConfigFiles(provider, env, home).filter((file) => !file.endsWith('.env'));
+  if (provider === 'qwen') files.push(...qwenSystemPaths(env));
+  for (const file of files) {
+    let source;
+    try { source = await readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') continue; throw new Error(`${provider} 配置无法安全读取，任务未启动`); }
+    let hasHooks = false;
+    if (file.endsWith('.json')) {
+      let settings;
+      try { settings = JSON.parse(source); } catch { throw new Error(`${provider} 配置不是标准 JSON（可能包含注释），无法安全检查；请使用标准 JSON 配置或 API 模式`); }
+      hasHooks = ['hooks', 'systemHooks', 'userHooks', 'projectHooks'].some((key) => Object.hasOwn(settings || {}, key));
+      if (provider === 'qwen' && settings?.memory?.mem0) throw new Error('Qwen 配置包含外部记忆服务，无法保证纯问答隔离；请改用独立配置或 API 模式');
+    } else {
+      // TOML 可使用引号和 Unicode 转义键名；只为保守检测解码，不重写用户配置。
+      const decoded = source.replace(/\\u([0-9a-f]{4})|\\U([0-9a-f]{8})/gi, (_, short, long) => { const code = parseInt(short || long, 16); return code <= 0x10ffff ? String.fromCodePoint(code) : ''; });
+      hasHooks = /(?:^|\n)\s*(?:["']?hooks["']?\s*=|\[\[?\s*["']?hooks["']?\s*(?:\.|\]))/m.test(decoded);
+    }
+    if (hasHooks) throw new Error(`${provider} 配置包含 hooks，无法保证纯问答隔离；请使用无 hooks 的 CLI 配置，或改用 API 模式`);
+  }
+  if (provider === 'kimi') {
+    // Kimi --print 会自动批准工具；空 agent 之外还必须拒绝额外插件工具。
+    const plugins = await readdir(join(cliHome(provider, env, home), 'plugins')).catch((error) => { if (error.code === 'ENOENT') return []; throw new Error('Kimi 插件目录无法安全检查，任务未启动'); });
+    if (plugins.length) throw new Error('Kimi 配置存在插件，无法保证纯问答隔离；请使用无插件的 CLI 配置，或改用 API 模式');
+  }
 }
 async function processCommand(command, args) {
   if (platform() !== 'win32') return { command, args };
@@ -146,12 +186,20 @@ export function codexArguments(schemaPath, outputPath) {
 export function geminiArguments(policyPath) {
   return ['--prompt', '', '--output-format', 'json', '--approval-mode', 'default', '--admin-policy', policyPath, '--extensions', 'none'];
 }
+export function qwenArguments() {
+  // 非空但不匹配任何真实工具的白名单，避免空列表被 CLI 解释成“启用默认工具”。
+  return ['--prompt', '', '--output-format', 'json', '--approval-mode', 'default', '--core-tools', '__nexly_no_tools__', '--allowed-mcp-server-names', '__nexly_no_mcp__', '--extensions', 'none'];
+}
+export function kimiArguments(agentPath, mcpPath, skillsPath) {
+  return ['--print', '--output-format', 'text', '--final-message-only', '--agent-file', agentPath, '--mcp-config-file', mcpPath, '--skills-dir', skillsPath];
+}
 export function decodeCliResult(provider, stdout, savedOutput, question) {
   if (provider === 'codex') return parseAnswer(savedOutput, question);
+  if (provider === 'kimi') return parseAnswer(stdout, question);
   let envelope;
   try { envelope = JSON.parse(stdout.trim()); } catch { throw new Error(`${provider} CLI 未返回约定的 JSON 输出，请检查版本`); }
   if (envelope.is_error || envelope.error) throw new Error(cliFailure('error', String(envelope.error?.message || envelope.result || ''), ''));
-  const content = provider === 'claude' ? envelope.structured_output ?? envelope.result : envelope.response;
+  const content = provider === 'claude' ? envelope.structured_output ?? envelope.result : provider === 'qwen' ? envelope.result ?? envelope.response : envelope.response;
   if (content == null) throw new Error('CLI 输出缺少答案，请检查 CLI 版本或供应商是否支持结构化输出');
   return parseAnswer(content, question);
 }
@@ -159,7 +207,7 @@ export async function health() {
   const config = await readLocalConfig();
   const providers = await Promise.all(PROVIDERS.map(async (id) => {
     try { const command = await resolveCommand(id, config); const { stdout } = await runProcess(command, ['--version'], { timeoutMs: 6000 }); return { id, installed: true, command, version: redact(stdout.trim()), configs: await configMetadata(id) }; }
-    catch (error) { return { id, installed: false, error: error.message, configs: await configMetadata(id) }; }
+    catch (error) { return { id, installed: false, error: error.message, configs: await configMetadata(id).catch(() => []) }; }
   }));
   return { hostVersion: '0.1.0', nodeVersion: process.version, providers, authenticationChecked: false, configPolicy: '每次任务启动新 CLI 进程；下一次请求读取 CLI 当前配置。' };
 }
@@ -174,16 +222,25 @@ export async function solveWithCli(provider, rawQuestion, { signal, onProgress =
     await writeFile(schemaPath, JSON.stringify(ANSWER_SCHEMA), { mode: 0o600 });
     await writeFile(policyPath, '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 950\n', { mode: 0o600 });
     const env = childEnvironment();
-    if (provider === 'gemini') {
+    // 固定本次检测的配置根，避免 CLI 再次读取 .env 后重定向到未经隔离检查的目录。
+    if (provider === 'qwen') { env.QWEN_HOME = cliHome(provider, env); [env.QWEN_CODE_SYSTEM_SETTINGS_PATH, env.QWEN_CODE_SYSTEM_DEFAULTS_PATH] = qwenSystemPaths(env); }
+    await assertCliIsolation(provider, env);
+    if (provider === 'gemini' || provider === 'qwen') {
       // 仅信任桥接器刚创建的临时目录；不修改用户 trustedFolders，也不允许工具执行。
-      env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
-      // 独立临时目录下 Gemini 不一定加载用户 .env；每次重读 ccSwitch 的 live 文件，且只传给本地 CLI。
+      if (provider === 'gemini') env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
+      // 独立临时目录可能不会加载用户 .env；每次重读正式配置，只向子进程传递鉴权/模型字段。
       try {
-        const values = parseEnv(await readFile(join(homedir(), '.gemini/.env'), 'utf8'));
-        for (const [key, value] of Object.entries(values)) if (/^(GEMINI_|GOOGLE_)/.test(key)) env[key] = value;
-      } catch (error) { if (error.code !== 'ENOENT') throw new Error('无法读取 Gemini CLI 的现有 .env 配置'); }
+        const values = parseEnv(await readFile(join(cliHome(provider, env), '.env'), 'utf8'));
+        for (const [key, value] of Object.entries(values)) if ((provider === 'gemini' ? /^(GEMINI_|GOOGLE_)/ : /^(?:OPENAI_(?:API_KEY|BASE_URL|MODEL)|QWEN_(?:API_KEY|MODEL)|DASHSCOPE_API_KEY)$/).test(key)) env[key] = value;
+      } catch (error) { if (error.code !== 'ENOENT') throw new Error(`无法读取 ${provider} CLI 的现有 .env 配置`); }
     }
-    const args = provider === 'codex' ? codexArguments(schemaPath, outputPath) : provider === 'claude' ? claudeArguments(ANSWER_SCHEMA) : geminiArguments(policyPath);
+    const agentPath = join(cwd, 'agent.yaml'), mcpPath = join(cwd, 'mcp.json');
+    if (provider === 'kimi') {
+      await writeFile(join(cwd, 'system.md'), '只处理用户给出的练习题数据，按用户指定 JSON Schema 返回答案。不调用工具，不访问文件，不执行命令。', { mode: 0o600 });
+      await writeFile(agentPath, 'version: 1\nagent:\n  name: nexly-answer-only\n  system_prompt_path: ./system.md\n  tools: []\n  subagents: {}\n', { mode: 0o600 });
+      await writeFile(mcpPath, '{"mcpServers":{}}', { mode: 0o600 });
+    }
+    const args = provider === 'codex' ? codexArguments(schemaPath, outputPath) : provider === 'claude' ? claudeArguments(ANSWER_SCHEMA) : provider === 'qwen' ? qwenArguments() : provider === 'kimi' ? kimiArguments(agentPath, mcpPath, cwd) : geminiArguments(policyPath);
     onProgress({ provider, phase: 'running', elapsedSeconds: 0 });
     const startedAt = Date.now(); heartbeat = setInterval(() => onProgress({ provider, phase: 'running', elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) }), 2000);
     const { stdout } = await runProcess(command, args, { cwd, env, stdin: buildPrompt(question), signal, timeoutMs: Math.min(600000, Math.max(10000, timeoutMs)) });

@@ -13,7 +13,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   const outbound = [], commands = event(), messages = event(), disconnected = event(), activated = event(), focus = event();
   const port = { onMessage: messages, onDisconnect: disconnected, postMessage(message) { outbound.push(message); if (message.action === 'cancel') queueMicrotask(() => { messages.emit({ requestId: message.targetId, type: 'error', error: '任务已停止' }); messages.emit({ requestId: message.requestId, type: 'result', data: { canceled: true } }); }); } };
   globalThis.chrome = {
-    storage: { onChanged: storageChanged, local: { set: async (patch) => { Object.assign(localSettings, patch); }, get: async () => ({ ...localSettings, provider: 'gemini', count: 1, runAfterFill: false, runInBackground: false, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }) }, session: { get: async () => ({}), set: async ({ taskState }) => { saved = structuredClone(taskState); } } },
+    storage: { onChanged: storageChanged, local: { setAccessLevel: async () => {}, set: async (patch) => { Object.assign(localSettings, patch); }, get: async () => ({ dataConsentVersion: 1, ...localSettings, provider: 'gemini', count: 1, runAfterFill: false, runInBackground: false, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }) }, session: { setAccessLevel: async () => {}, get: async () => ({}), set: async ({ taskState }) => { saved = structuredClone(taskState); } } },
     runtime: { id: 'test', getURL: (path) => `chrome-extension://test/${path}`, onMessage: commands, sendMessage: async () => {}, connectNative: () => port },
     tabs: { query: async () => [{ id: 1, url: single.pageUrl }], get: async () => ({ id: 1, windowId: 1, active }), onActivated: activated, sendMessage: async (_tabId, message) => { if (message.type === 'page-appearance') { appearanceMessages.push(message); return; } assert.equal(message.type, 'page-state'); assert.equal(message.state.question, undefined); assert.equal(message.state.answer, undefined); } },
     windows: { get: async () => ({ focused }), onFocusChanged: focus },
@@ -39,8 +39,9 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
         return [result];
       }
       if (action === 'fillStep') { if (emptyInjection) return []; assert.equal(payload.questionId, question.questionId); if (fillResponder) return fillResponder(payload); writes++; return [{ result: { ok: true, verified: true, done: true, detail: '回读通过' } }]; }
-      if (action === 'run') { assert.equal(question.type, 'code', 'non-code question must never dispatch a run click'); runClicks++; if (runFailure) return [{ result: { ok: false, error: runFailure } }]; return [{ result: { ok: true, clicked: true, previousResult: '' } }]; }
-      if (action === 'runStatus') return [{ result: { ok: true, loading: false, result: '通过 测试输出 FALSE 预期输出 FALSE' } }];
+      if (action === 'run') { assert.equal(question.type, 'code', 'non-code question must never dispatch a run click'); runClicks++; if (runFailure) return [{ result: { ok: false, error: runFailure } }]; return [{ result: { ok: true, clicked: true, runToken: 'mock-run' } }]; }
+      if (action === 'runStatus') return [{ result: { ok: true, loading: false, fresh: true, stable: true, outcome: 'passed', summary: '通过', result: '通过 测试输出 FALSE 预期输出 FALSE' } }];
+      if (action === 'releaseRun') return [{ result: { ok: true } }];
       throw new Error(`Unexpected page action: ${action}`);
     } }
   };
@@ -164,7 +165,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   await command('stop');
   runAvailable = true;
 
-  // 编程题验证拿不到可验证结果时：跳过验证并自动换下一题，不中断整批任务。
+  // 编程题没有可靠结果时留在当前题等待人工，不把“无法验证”当通过，也不自动换题。
   question = structuredClone(codeQuestion);
   navigationQuestion = { ...single, questionId: 'after-verify-failure', title: '验证失败后的下一题', stem: '单选题：验证失败后的下一题' };
   offset = outbound.length;
@@ -172,13 +173,13 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   runFailure = '执行入口没有返回结果';
   await command('start', { provider: 'gemini', fill: true, run: true, count: 2 }); request = await nextSolve(offset);
   const verifyFailureOffset = outbound.length; answer(request, { questionId: codeQuestion.questionId, type: 'code', choiceIds: [], code: 'console.log("FALSE");' });
-  request = await nextSolve(verifyFailureOffset);
-  assert.equal(request.question.questionId, 'after-verify-failure');
-  assert.equal(navigationClicks, navBeforeVerifyFailure + 1);
-  answer(request); await until(() => !saved.busy);
-  assert.equal(saved.completed, 2); assert.equal(saved.error, ''); assert.equal(saved.phase, 'filled');
-  assert.equal(runClicks, clicksBeforeVerifyFailure + 1, '验证失败只尝试一次，不会对下一题重复执行入口');
-  assert.ok(saved.log.some((entry) => entry.text.includes('已跳过验证并继续下一题')));
+  await until(() => saved.phase === 'awaitingManual');
+  assert.equal(navigationClicks, navBeforeVerifyFailure);
+  assert.equal(outbound.slice(verifyFailureOffset).filter((item) => item.action === 'solve').length, 0);
+  assert.equal(saved.completed, 1); assert.equal(saved.error, '');
+  assert.equal(runClicks, clicksBeforeVerifyFailure + 1);
+  assert.ok(saved.log.some((entry) => entry.text.includes('停留当前题等待人工核对')));
+  await command('stop');
   runFailure = null; navigationQuestion = null;
 
   // 注入结果为空（frame/document 已重建）时给出可诊断的原因，而不是笼统的“没有返回可验证的操作结果”。

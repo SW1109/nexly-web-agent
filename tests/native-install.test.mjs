@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile, readFile, access } from 'node:fs/promises';
 import { platform, tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join, posix, win32 } from 'node:path';
-import { nativeInstallationPaths, nativeLauncher } from '../scripts/native-platform.mjs';
+import { nativeInstallationPaths, nativeLauncher, nativeOptions, nativeRegistrySubkey } from '../scripts/native-platform.mjs';
 import { HOST_NAME } from '../extension/lib/contracts.js';
 import { encodeFrame } from '../bridge/framing.mjs';
 
@@ -95,3 +96,51 @@ function launchLikeChrome(launcherPath, args, input, extraEnvironment = {}) {
     child.stdin.end(input);
   });
 }
+
+
+test('Edge native registrations are isolated from Chrome and accept only an explicit extension ID', () => {
+  const id = 'abcdefghijklmnopabcdefghijklmnop';
+  assert.deepEqual(nativeOptions(['--browser', 'edge', '--extension-id', id, '--dry-run'], id), { browser: 'edge', extensionId: id, dryRun: true });
+  for (const args of [['--browser', 'unknown'], ['--extension-id', '*'], ['--extension-id', 'https://evil.test'], ['--browser'], ['--dry-run', '--dry-run'], ['--shell']]) assert.throws(() => nativeOptions(args, id));
+  const windows = nativeInstallationPaths({ system: 'win32', home: 'C:/Users/tester', browser: 'edge' });
+  assert.equal(windows.registryKey, `HKCU\\${nativeRegistrySubkey('edge')}`);
+  assert.ok(windows.manifestPath.endsWith('edge\\com.nexly.web_agent.json'));
+  for (const system of ['darwin', 'linux', 'win32']) {
+    const options = { system, home: system === 'win32' ? 'C:/Users/tester' : '/home/tester' };
+    const chrome = nativeInstallationPaths(options), edge = nativeInstallationPaths({ ...options, browser: 'edge' });
+    assert.notEqual(edge.manifestPath, chrome.manifestPath);
+    assert.notEqual(edge.launcher, chrome.launcher);
+    assert.notEqual(edge.installationPath, chrome.installationPath);
+    assert.equal(edge.ownRoot, chrome.ownRoot);
+  }
+  assert.equal(nativeInstallationPaths({ system: 'darwin', home: '/Users/tester', browser: 'edge' }).nativeRoot, '/Users/tester/Library/Application Support/Microsoft Edge/NativeMessagingHosts');
+  assert.equal(nativeInstallationPaths({ system: 'linux', home: '/home/tester', browser: 'edge' }).nativeRoot, '/home/tester/.config/microsoft-edge/NativeMessagingHosts');
+});
+
+
+test('isolated macOS/Linux native install, ID update and uninstall do not touch the other browser', { skip: platform() === 'win32' }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'quizmate-native-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const env = { ...process.env, HOME: home };
+  const run = (script, args = []) => execFileSync(process.execPath, [fileURLToPath(new URL(`../scripts/${script}.mjs`, import.meta.url)), ...args], { env, encoding: 'utf8' });
+  const id = 'abcdefghijklmnopabcdefghijklmnop', replacement = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const chrome = nativeInstallationPaths({ home }), edge = nativeInstallationPaths({ home, browser: 'edge' });
+  run('install-native');
+  const originalChrome = await readFile(chrome.manifestPath, 'utf8');
+  run('install-native', ['--browser', 'edge', '--extension-id', id]);
+  assert.deepEqual(JSON.parse(await readFile(edge.manifestPath, 'utf8')).allowed_origins, [`chrome-extension://${id}/`]);
+  run('install-native', ['--browser', 'edge', '--extension-id', replacement]);
+  assert.deepEqual(JSON.parse(await readFile(edge.manifestPath, 'utf8')).allowed_origins, [`chrome-extension://${replacement}/`]);
+  run('uninstall-native', ['--browser', 'edge', '--extension-id', replacement, '--dry-run']);
+  await access(edge.manifestPath);
+  const record = await readFile(edge.installationPath, 'utf8');
+  await writeFile(edge.installationPath, JSON.stringify({ ...JSON.parse(record), projectRoot: '/different/project' }));
+  assert.throws(() => run('install-native', ['--browser', 'edge', '--extension-id', id]));
+  assert.deepEqual(JSON.parse(await readFile(edge.manifestPath, 'utf8')).allowed_origins, [`chrome-extension://${replacement}/`]);
+  await writeFile(edge.installationPath, record);
+  run('uninstall-native', ['--browser', 'edge', '--extension-id', replacement]);
+  await assert.rejects(access(edge.manifestPath)); await assert.rejects(access(edge.launcher));
+  assert.equal(await readFile(chrome.manifestPath, 'utf8'), originalChrome);
+  await access(chrome.launcher);
+  run('uninstall-native'); await assert.rejects(access(chrome.manifestPath));
+});

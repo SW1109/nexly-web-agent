@@ -1,16 +1,18 @@
 import { readFile, unlink, rmdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { ROOT, extensionIdentity } from './project.mjs';
-import { nativeInstallationPaths } from './native-platform.mjs';
+import { nativeInstallationPaths, nativeOptions } from './native-platform.mjs';
 import { windowsRegistration } from './windows-registry.mjs';
 import { HOST_NAME } from '../extension/lib/contracts.js';
-const { ownRoot, manifestPath, launcher, registryKey } = nativeInstallationPaths();
-const installed = JSON.parse(await readFile(join(ownRoot, 'installation.json'), 'utf8'));
-const { id } = await extensionIdentity();
+const { id: developmentId } = await extensionIdentity();
+const options = nativeOptions(process.argv.slice(2), developmentId);
+const { ownRoot, manifestPath, launcher, registryKey, installationPath, browser } = nativeInstallationPaths(options);
+if (options.dryRun) { console.log(JSON.stringify({ browser, manifestPath, launcher, installationPath, extensionId: options.extensionId }, null, 2)); process.exit(0); }
+const installed = JSON.parse(await readFile(installationPath, 'utf8'));
+const id = options.extensionId;
 if (installed.projectRoot !== ROOT || installed.extensionId !== id || installed.manifestPath !== manifestPath || installed.launcher !== launcher) throw new Error('安装信息与当前项目不匹配，未删除任何文件');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 if (manifest.name !== HOST_NAME || manifest.type !== 'stdio' || manifest.path !== installed.launcher || manifest.allowed_origins?.length !== 1 || manifest.allowed_origins[0] !== `chrome-extension://${id}/`) throw new Error('Native host 配置已变化，未删除');
-if (registryKey) windowsRegistration('remove', manifestPath);
-for (const file of [manifestPath, installed.launcher, join(ownRoot, 'installation.json')]) await unlink(file);
+if (registryKey) windowsRegistration('remove', manifestPath, browser);
+for (const file of [manifestPath, installed.launcher, installationPath]) await unlink(file);
 await rmdir(ownRoot).catch(() => {});
-console.log('已卸载本项目 native host。保留 CLI、ccSwitch、用户自定义 config.json 和项目源码。扩展本身请在 Chrome 中移除。');
+console.log('已卸载本项目 native host。保留 CLI、ccSwitch、用户自定义 config.json 和项目源码。扩展本身请在对应浏览器中移除。');

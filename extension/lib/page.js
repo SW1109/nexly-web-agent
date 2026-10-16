@@ -4,6 +4,16 @@ export async function pageAction(action, payload = {}) {
   // 注入函数抛出的异常不会把消息带回扩展，因此整段包在 try 中，统一转成 { ok:false, error } 返回。
   try {
     if (action === 'focusState') return { ok: true, visible: document.visibilityState === 'visible', focused: document.hasFocus() };
+    function releaseSampleRun(tracker) {
+      tracker?.observer?.disconnect();
+      if (tracker?.timer) clearTimeout(tracker.timer);
+      if (globalThis.__nexlySampleRun === tracker) delete globalThis.__nexlySampleRun;
+    }
+    if (action === 'releaseRun') {
+      const tracker = globalThis.__nexlySampleRun;
+      if (tracker?.token === payload.runToken) releaseSampleRun(tracker);
+      return { ok: true };
+    }
     const normalize = (value) => String(value || '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim();
     const visible = (el) => {
       if (!el || el.closest('[hidden],[inert],[aria-hidden="true"],[data-nexly-controls]')) return false;
@@ -44,7 +54,7 @@ export async function pageAction(action, payload = {}) {
       const clone = root.cloneNode(true);
       const originals = [...root.querySelectorAll('*')], copies = [...clone.querySelectorAll('*')];
       originals.forEach((el, index) => { if (!visible(el)) copies[index]?.remove(); });
-      clone.querySelectorAll('script,style,nav,header,footer,button,textarea,input,select,.monaco-editor,.ace_editor,.CodeMirror,[contenteditable="true"],[hidden],[aria-hidden="true"],.ant-tabs-content-holder,.test-results').forEach((el) => el.remove());
+      clone.querySelectorAll('script,style,nav,header,footer,button,textarea,input,select,.monaco-editor,.ace_editor,.CodeMirror,[contenteditable="true"],[hidden],[aria-hidden="true"],.ant-tabs-content-holder,.test-results,.execution-result,[data-nexly-result]').forEach((el) => el.remove());
       // 克隆节点没有布局；为块级元素加换行后读 textContent，避免题干、样例挤成一行。
       clone.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,pre,tr,br').forEach((el) => el.append(document.createTextNode('\n')));
       let value = normalize(clone.textContent).replace(/\n[ \t]*\n+/g, '\n');
@@ -242,7 +252,7 @@ export async function pageAction(action, payload = {}) {
     if (type === 'code') {
       try { const editor = codeEditor(); editorInfo = { kind: editor.kind, supported: true, code: editor.get(), binding: editor.token, retryable: false, error: '' };
         if (all('[aria-busy="true"],.ant-spin-spinning,.el-loading-mask', root).length) editorInfo = { ...editorInfo, supported: false, retryable: true, error: '正在等待当前题目加载完成' }; }
-      catch (error) { editorInfo = { kind: editorRoots[0]?.className || 'unknown', supported: false, retryable: true, code: '', error: error.message }; }
+      catch (error) { editorInfo = { kind: editorRoots[0]?.className || 'unknown', supported: false, retryable: true, code: '', error: error.message, errorCode: error.code }; }
     }
     const question = { questionId, title, type, stem, options: type === 'code' ? [] : options, fields, language: normalize(language).slice(0, 100), starterCode: editorInfo.code, pageUrl };
     if (action === 'read') return readResult({ ok: true, question, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null }, run: runInfo(), visible: document.visibilityState === 'visible' });
@@ -263,6 +273,8 @@ export async function pageAction(action, payload = {}) {
       if (!Number.isInteger(interval) || interval < 0 || interval > 500) throw new Error('输入间隔无效');
       const fragmentSize = interval ? Math.max(1, Math.floor(120 / interval)) : Infinity;
       const normalizeCode = (value) => value.replace(/\r\n/g, '\n');
+      // 回读与注入之间仍可能有人编辑；首片段在页面内再次比对，不能覆盖这段间隙的人工修改。
+      if (type === 'code' && !progress.started && typeof payload.expectedCode === 'string' && normalizeCode(editorInfo.code) !== normalizeCode(payload.expectedCode)) throw new Error('修正写入前代码已被人工更改，停止以避免覆盖你的编辑');
       const ensureUnchanged = () => {
         if (questionText() !== stem || !root.isConnected) throw new Error('输入期间页面或题目已变化，已停止');
       };
@@ -373,9 +385,32 @@ export async function pageAction(action, payload = {}) {
     }
 
     function executionResult() {
-      const panels = all('[role="tabpanel"],.ant-tabs-tabpane,.execution-result,[data-nexly-result]', root);
-      const candidate = panels.map(text).find((value) => /测试输出|预期输出|编译失败|运行错误|运行超时/.test(value));
-      return candidate?.slice(0, 4000) || '';
+      const panels = all('[role="tabpanel"],.ant-tabs-tabpane,.execution-result,.test-results,[data-nexly-result]', root)
+        .filter((el) => {
+          const pane = el.closest('[role="tabpanel"],.ant-tabs-tabpane'), labelId = pane?.getAttribute('aria-labelledby');
+          const label = pane?.getAttribute('aria-label') || (labelId ? labelId.split(/\s+/).map((id) => text(document.getElementById(id))).join(' ') : '');
+          return !/提交|历史|submission|history/i.test(label);
+        })
+        .filter((el) => /测试输出|预期输出|实际输出|编译错误|编译失败|运行错误|运行超时|执行结果|Wrong Answer|Compilation Error|Runtime Error/i.test(text(el)) || el.matches('[data-nexly-result],.execution-result'));
+      const explicit = panels.filter((el) => el.matches('[data-nexly-result],.execution-result'));
+      const candidates = explicit.length ? explicit : panels;
+      // 保留同一结果区域的状态标题和嵌套输出，不把子输出面板单独当结果而丢掉“编译错误”。
+      const outer = candidates.filter((el) => !candidates.some((other) => other !== el && other.contains(el)));
+      // 多个独立可见结果面板时不猜测，更不能把“提交结果”里的旧日志用作本次执行反馈。
+      if (outer.length !== 1) return { result: '', fingerprint: '', summary: '', outcome: 'unknown', loading: false };
+      const panel = outer[0], raw = String(panel.innerText || panel.textContent || '').replace(/\u00a0/g, ' ').trim();
+      const statuses = all('[data-nexly-status],.execution-status,.result-status,[role="status"]', panel);
+      // 错误关键字只在状态标题中判断：程序正常输出 "Error" 时不能误判为运行错误。
+      const header = statuses.length === 1 ? text(statuses[0]) : raw.split(/测试输入|测试输出|预期输出|实际输出|期望输出|标准输入|标准输出|Input:|Output:|Expected:/i)[0].replace(/^(?:执行结果|运行结果)\s*[:：]?\s*/, '');
+      const summary = normalize(header).slice(0, 180);
+      const ratio = header.match(/(?:通过率|pass(?:ed)? rate)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/i), count = header.match(/(\d+)\s*[/／]\s*(\d+)\s*(?:个)?(?:用例|样例|tests?)?\s*(?:通过|passed)/i);
+      const partial = (ratio && Number(ratio[1]) < 100) || (count && Number(count[1]) < Number(count[2]));
+      const failed = partial || /不通过|未通过|失败|错误|超时|异常|超出.*限制|Wrong Answer|(?:Compilation|Compile|Runtime|Syntax) Error|Time Limit Exceeded|Memory Limit Exceeded|Not Accepted|\bFailed\b|\berror\s+TS\d+|\b(?:TypeError|SyntaxError|ReferenceError)\b|Traceback \(most recent call last\)|^\s*Error\b/i.test(header);
+      const passed = /通过|\bAccepted\b|\bSuccess\b|\bPassed\b/i.test(header) && !(count && Number(count[2]) === 0);
+      const loading = /编译中|运行中|执行中|等待.*结果|正在(?:编译|运行|执行)|\bRunning\b|\bCompiling\b|\bPending\b/i.test(header);
+      // 与 contracts.LIMITS.executionResult 一致；截断只影响日志，绝不截断实际执行代码。
+      const suffix = '\n[执行日志过长，已截断]';
+      return { result: raw.length > 16000 ? raw.slice(0, 16000 - suffix.length) + suffix : raw, fingerprint: `${raw.length}:${hash(raw)}`, summary, outcome: failed ? 'failed' : passed ? 'passed' : 'unknown', hasDetails: raw !== header.trim() || /error\s*(?:TS\d+|:)|Exception:|Traceback/i.test(raw), loading };
     }
     if (action === 'run') {
       const entry = runEntry();
@@ -383,11 +418,44 @@ export async function pageAction(action, payload = {}) {
       if (!entry.available) return { ok: false, error: entry.reason === 'ambiguous' ? '页面存在多个同级执行入口，无法确定目标；不会用“提交”按钮代替' : '没有找到唯一的“执行代码/执行验证”入口；不会用“提交”按钮代替' };
       if (entry.disabled) return { ok: true, waiting: true, detail: '执行按钮暂不可用，等待平台恢复' };
       if (codeEditor().get().replace(/\r\n/g, '\n') !== payload.code.replace(/\r\n/g, '\n')) throw new Error('编辑器内容已变化，停止运行');
-      const previousResult = executionResult();
-      entry.element.click();
-      return { ok: true, clicked: true, previousResult };
+      releaseSampleRun(globalThis.__nexlySampleRun);
+      const previous = executionResult(), code = codeEditor().get();
+      const tracker = { token: crypto.randomUUID(), questionId, binding: editorInfo.binding, code, previous: previous.fingerprint, last: previous.fingerprint, lastLoading: false, changed: false, sawLoading: false, changedAt: Date.now() };
+      globalThis.__nexlySampleRun = tracker;
+      const observe = () => {
+        const current = executionResult(), currentEntry = runEntry();
+        const loading = current.loading || (currentEntry.available && currentEntry.disabled);
+        tracker.sawLoading ||= loading;
+        tracker.changed ||= current.fingerprint !== tracker.previous;
+        if (current.fingerprint !== tracker.last || loading !== tracker.lastLoading) tracker.changedAt = Date.now();
+        tracker.last = current.fingerprint; tracker.lastLoading = loading;
+      };
+      // 在点击前监听，捕获两次轮询之间短暂的清空/加载，支持“新一轮仍返回相同错误”。
+      if (typeof MutationObserver === 'function') {
+        tracker.observer = new MutationObserver(observe);
+        tracker.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'aria-disabled', 'aria-busy', 'class', 'hidden', 'style', 'aria-selected'] });
+        tracker.timer = setTimeout(() => releaseSampleRun(tracker), 65000);
+      }
+      try { entry.element.click(); observe(); } catch (error) { releaseSampleRun(tracker); throw error; }
+      return { ok: true, clicked: true, runToken: tracker.token };
     }
-    if (action === 'runStatus') { const entry = runEntry(); return { ok: true, loading: entry.available ? entry.disabled : true, result: executionResult() }; }
+    if (action === 'runStatus') {
+      const tracker = globalThis.__nexlySampleRun;
+      if (!tracker || tracker.token !== payload.runToken || tracker.questionId !== questionId) throw new Error('执行记录已失效，拒绝读取旧结果');
+      if (editorInfo.errorCode === 'EDITOR_AMBIGUOUS') throw new Error('执行期间出现多个活动代码区域，停止自动修正，请人工检查');
+      // 执行时站点会临时设为只读、遮罩或隐藏编辑器；不可读/不可写不等于代码被修改。
+      // 保留本次执行记录并等待原实例恢复，恢复后仍须逐字核对，不能据此重绑其他文件或解除只读。
+      const waitingForEditor = !editorInfo.supported;
+      if (!waitingForEditor && editorInfo.binding !== tracker.binding) throw new Error('执行期间编辑器实例或代码文件已切换，停止自动修正，请人工检查');
+      if (!waitingForEditor && editorInfo.code.replace(/\r\n/g, '\n') !== tracker.code.replace(/\r\n/g, '\n')) throw new Error('执行期间代码已变化，停止自动修正，请人工检查');
+      const entry = runEntry(), current = executionResult(), loading = waitingForEditor || !entry.available || entry.disabled || current.loading;
+      // 编辑器不可用本身不证明产生了新结果，避免把原有错误日志误送给模型。
+      tracker.sawLoading ||= current.loading || (entry.available && entry.disabled);
+      tracker.changed ||= current.fingerprint !== tracker.previous;
+      if (current.fingerprint !== tracker.last || loading !== tracker.lastLoading) tracker.changedAt = Date.now();
+      tracker.last = current.fingerprint; tracker.lastLoading = loading;
+      return { ok: true, ...current, loading, waitingForEditor, fresh: tracker.changed || tracker.sawLoading, stable: Date.now() - tracker.changedAt >= 350, code: tracker.code };
+    }
     return { ok: false, error: '不支持的页面操作' };
   } catch (error) {
     return { ok: false, error: `页面操作未能完成：${error?.message || error}` };
