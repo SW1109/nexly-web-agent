@@ -17,7 +17,7 @@ function connect() {
   port.onDisconnect.addListener(() => {
     const detail = chrome.runtime.lastError?.message || '本地桥已断开';
     port = null;
-    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error(`无法连接本地 CLI 桥：${detail}。请按操作手册安装当前浏览器的本地桥，并核对扩展 ID。`)); }
+    for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error(`无法连接本地 CLI 桥：${detail}。请点击“设置本地桥”，获取当前浏览器与扩展 ID 对应的安装或修复命令。`)); }
     pending.clear();
   });
   return port;

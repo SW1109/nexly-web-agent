@@ -55,14 +55,19 @@ QuizMate 专为允许使用辅助工具的学习与练习场景设计。扩展�
 
 1. **安装本地原生桥**：
    ```bash
-   # 在项目根目录下执行安装脚本
+   # Chrome 开发版：在项目根目录执行
    node scripts/setup.mjs
+
+   # Edge：将 YOUR_EDGE_EXTENSION_ID 替换为 edge://extensions 中本扩展的真实 32 位 ID
+   node scripts/setup.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID
    ```
    *注：Windows 在 PowerShell 中运行上述命令即可；macOS / Linux 亦可使用 `bash scripts/setup.sh`。*
+   默认命令注册 Chrome 并授权开发版 ID。Edge 商店版使用商店分配的 ID，需使用 Edge 命令单独注册；从商店安装扩展不会同时安装本地 CLI 桥。已有本地环境时，可直接运行 `node scripts/install-native.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID` 更新注册。
 2. **加载扩展程序**：
-   - 同样在 `chrome://extensions` 中开启开发者模式，加载 `dist/extension` 目录。
+   - 开发版在 `chrome://extensions` 或 `edge://extensions` 中开启开发者模式，加载 `dist/extension` 目录；已安装商店版的用户直接使用商店版。
 3. **验证连接**：
    - 在扩展侧栏的“设置”中选择 **「本地模式」**，选择对应的 CLI 工具，点击 **「刷新连接」** 显示连接正常即可。
+   - 连接失败时点击 **「设置本地桥」**，自动读取浏览器与扩展 ID，复制安装命令或下载修复脚本；同一商店条目的常规更新无需更换 ID。
 
 ---
 

@@ -17,8 +17,10 @@ npm test
 npm run build:edge
 ```
 
-- 构建产物生成于 `dist/quizmate-edge-v0.4.0.zip`。
+- 构建产物生成于 `dist/quizmate-edge-v0.4.1.zip`。
 - 该 ZIP 包根目录下直接包含 `manifest.json`，已移除本地开发用的固定密钥（`key`），不包含源码开发文件、测试套件或本地桥脚本。
+- 商店分配的扩展 ID 与开发版不同。发布后需在本地 CLI 的安装说明中要求用户从 `edge://extensions` 复制真实 ID，再运行 `node scripts/setup.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID`。已有本地环境时只需运行 `node scripts/install-native.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID`。API 模式无需安装本地桥。
+- 发布 0.4.1 时，在现有商店条目上传新版 ZIP，保留当前扩展 ID；不要为普通更新重新创建条目。新版提供“设置本地桥”入口，可自动生成实际 ID 对应的命令并下载修复脚本。发布前需分别验证已有桥升级、首次安装以及未授权 ID 的提示流程。
 
 ---
 

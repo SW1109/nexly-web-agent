@@ -1192,3 +1192,4 @@ a:not([href]) { visibility: hidden; }
 #data-consent .checkbox { align-items: flex-start; }
 #clear-history { margin-top: 10px; }
 .project-section .resource-links { margin-block: 8px; }
+.bridge-setup-link { display: inline-flex; align-items: center; min-height: 38px; font-weight: 600; font-size: 12px; }

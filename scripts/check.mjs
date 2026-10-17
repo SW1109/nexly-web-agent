@@ -14,14 +14,14 @@ async function check(dir) {
 }
 await check(ROOT);
 const manifest = JSON.parse(await readFile(join(ROOT, 'extension/manifest.json'), 'utf8'));
-for (const file of [manifest.background.service_worker, manifest.side_panel.default_path, ...Object.values(manifest.icons), 'api-runner.html', 'api-runner.js', 'lib/api-worker.js', 'help.html', 'help.js', 'help.css']) await readFile(join(ROOT, 'extension', file));
+for (const file of [manifest.background.service_worker, manifest.side_panel.default_path, ...Object.values(manifest.icons), 'api-runner.html', 'api-runner.js', 'lib/api-worker.js', 'help.html', 'help.js', 'help.css', 'native-setup.html', 'native-setup.js', 'native-setup.css']) await readFile(join(ROOT, 'extension', file));
 const project = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
 const lock = JSON.parse(await readFile(join(ROOT, 'package-lock.json'), 'utf8'));
 if (manifest.version !== project.version || lock.version !== project.version || lock.packages[''].version !== project.version) throw new Error('扩展、项目与锁文件版本不一致');
 if (manifest.host_permissions?.length || manifest.permissions.includes('debugger') || manifest.permissions.includes('cookies')) throw new Error('站点权限必须按需授权，不允许新增调试器或 Cookie 权限');
 if (manifest.manifest_version !== 3 || manifest.externally_connectable || !manifest.key) throw new Error('扩展清单不符合项目约定');
 // 同时检查离线帮助与面板的本地资源引用，避免只在构建后发现丢图或缺脚本。
-for (const html of ['panel.html', 'help.html', 'api-runner.html']) {
+for (const html of ['panel.html', 'help.html', 'api-runner.html', 'native-setup.html']) {
   const text = await readFile(join(ROOT, 'extension', html), 'utf8');
   for (const [, resource] of text.matchAll(/(?:src|href)=["']([^"']+)["']/g)) {
     if (/^(?:https?:|#)/.test(resource)) continue;

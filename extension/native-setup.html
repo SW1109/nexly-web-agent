@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>本地桥设置 · QuizMate</title><link rel="stylesheet" href="panel.css"><link rel="stylesheet" href="native-setup.css"></head>
+<body class="native-setup-page">
+<header class="header"><div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate</h1><p>本地桥设置</p></div></div><a href="help.html">操作手册</a></header>
+<main>
+  <section class="section" aria-labelledby="setup-title">
+    <h2 id="setup-title">连接你已安装的 CLI</h2>
+    <p class="muted">按当前浏览器与扩展 ID 安装或修复。你只需在终端运行一次命令，然后回来重新检测。</p>
+    <div class="field"><label for="bridge-browser">当前浏览器</label><select id="bridge-browser"><option value="edge">Microsoft Edge</option><option value="chrome">Google Chrome</option></select><p id="browser-hint" class="caption"></p></div>
+    <label for="bridge-extension-id">当前扩展 ID <span class="caption">已自动读取</span></label>
+    <div class="secret-field"><input id="bridge-extension-id" type="text" readonly spellcheck="false"><button id="copy-extension-id" class="secondary" type="button">复制 ID</button></div>
+    <p class="caption">同一个商店条目的版本更新通常保留 ID；重新发布到其他条目或商店时，按实际 ID 重新授权。</p>
+  </section>
+  <section class="section" aria-labelledby="steps-title">
+    <h2 id="steps-title">安装或修复</h2>
+    <ol class="bridge-steps">
+      <li><strong>确认 Node.js 22+ 和 CLI 已安装</strong><p>CLI 需要先在终端完成登录。扩展沿用现有账号与配置，不附带模型订阅或额度。</p><p>可先运行 <code>node --version</code> 检查 Node.js。</p></li>
+      <li><strong>已有本地桥：下载修复脚本</strong><p>脚本会寻找已有安装记录，自动使用上面的浏览器与扩展 ID；不会发送模型请求。</p><button id="download-bridge-repair" class="secondary" type="button">下载修复脚本</button><p>在下载文件夹打开终端，运行：</p><div class="bridge-command"><code id="repair-command"></code><button id="copy-repair-command" class="quiet" type="button">复制运行命令</button></div></li>
+      <li><strong>首次安装，或未找到旧项目目录</strong><p><a id="bridge-source" target="_blank" rel="noopener noreferrer">获取项目源码 ↗</a>，解压后在包含 <code>package.json</code> 的项目文件夹打开终端，运行下面的完整命令：</p><div class="bridge-command"><textarea id="bridge-command" rows="3" readonly spellcheck="false" aria-label="当前浏览器的本地桥安装命令"></textarea><button id="copy-bridge-command" class="secondary" type="button">复制安装 / 修复命令</button></div><p class="caption">已有项目源码时可直接使用此命令，无需下载修复脚本。扩展无法代替你运行本地安装命令。</p></li>
+    </ol>
+    <p id="bridge-action-status" class="caption" role="status" aria-live="polite"></p>
+  </section>
+  <section class="section" aria-labelledby="check-title">
+    <div class="section-heading"><h2 id="check-title">检测连接</h2><button id="check-bridge" class="primary" type="button">重新检测连接</button></div>
+    <p id="bridge-check-status" role="status" aria-live="polite">运行安装或修复命令后，点击重新检测。</p>
+    <ul id="bridge-providers" hidden></ul>
+    <details id="bridge-check-details" hidden><summary>查看检测详情</summary><pre id="bridge-check-error" class="preview"></pre></details>
+    <p class="caption">检测只查询本地 CLI 的版本，不验证账号、余额或模型服务是否可用。连接成功后回到侧栏即可使用。</p>
+  </section>
+</main>
+<script type="module" src="native-setup.js"></script>
+</body>
+</html>

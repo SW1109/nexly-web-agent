@@ -27,10 +27,15 @@ QuizMate 支持两种独立的工作模式，可在侧边栏右上角 **「设�
 - **适用场景**：已有配置完善的 Codex CLI、Claude Code、Gemini CLI、Qwen Code 或 Kimi CLI 环境。
 - **配置步骤**：
   1. 确保本机已安装 Node.js 22+ 及对应 CLI 工具并登录成功。
-  2. 在项目根目录执行安装脚本：
+  2. 在项目根目录按当前浏览器执行安装脚本：
      ```bash
+     # Chrome 开发版
      node scripts/setup.mjs
+
+     # Edge：用 edge://extensions 中本扩展的真实 32 位 ID 替换 YOUR_EDGE_EXTENSION_ID
+     node scripts/setup.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID
      ```
+     默认命令只注册 Chrome，并授权从源码 key 得到的开发版 ID。Edge 商店包移除了开发 key，实际 ID 由商店分配；不能沿用开发版 ID。安装商店扩展不会同时安装或注册本地 CLI 桥，每台使用本地模式的电脑都需要执行对应命令。
   3. 在扩展“设置”中选择 **「本地模式」**，挑选你要调用的 CLI 工具。
   4. 点击 **「刷新连接」**，状态显示为已连接即可开始答题。
 
@@ -74,9 +79,12 @@ QuizMate 支持两种独立的工作模式，可在侧边栏右上角 **「设�
 ## 4. 常见问题排查 (FAQ)
 
 ### Q1: 本地模式提示“本地桥未连接”？
+- **打开设置入口**：点击报错下方的“设置本地桥”，或在“设置 → 模型连接 → 本地模式”点击“设置 / 修复本地桥”。设置页自动读取当前浏览器和真实扩展 ID，可复制对应命令、下载修复脚本、重新检测连接。
+- **已有安装的修复**：下载修复脚本后，在下载文件夹运行设置页显示的 `node quizmate-bridge-setup-当前浏览器.mjs`。脚本优先查找现有安装记录；如果原项目已移动或首次安装，请获取项目源码后运行页面上的安装命令。脚本不下载代码、不读取 CLI 凭据、不发送模型请求。
 - **检查 Node.js 版本**：请确保系统安装了 Node.js 22 或更高版本。
-- **重新执行注册**：在项目根目录下重新执行 `node scripts/setup.mjs`，随后在设置页面点击“刷新连接”。
-- **确认扩展 ID 未变更**：原生桥严格绑定本扩展的固定 ID。
+- **重新执行注册**：按当前浏览器使用第 1.2 节中的命令，随后在设置页面点击“刷新连接”。已有本地环境的 Edge 用户也可只运行 `node scripts/install-native.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID`。
+- **确认真实扩展 ID**：本地桥的 `allowed_origins` 必须包含浏览器扩展管理页显示的真实 ID。开发版 ID 与 Edge 商店版 ID 不同；`Access to the specified native messaging host is forbidden` 表示浏览器未获该主机授权，需核对当前浏览器的注册和允许来源，单纯重新安装 CLI 无法补上这项授权。
+- **商店版本更新**：在同一个商店条目上传新版时 ID 保持不变。本地桥已正确安装、协议兼容且原项目目录仍可用时，扩展更新不需要重新注册；首次安装或换到其他商店仍需按实际 ID 安装本地桥。
 
 ### Q2: API 模式测试连接报 401 或 403 错误？
 - 检查 API Key 是否填写正确、是否有可用额度。

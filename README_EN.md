@@ -55,14 +55,19 @@ Best for users who already have configured CLI tools such as Codex, Claude Code,
 
 1. **Install the Native Messaging Bridge**:
    ```bash
-   # Run the setup script in the project root directory
+   # Chrome development build: run in the project root
    node scripts/setup.mjs
+
+   # Edge: replace YOUR_EDGE_EXTENSION_ID with this extension's actual 32-character ID from edge://extensions
+   node scripts/setup.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID
    ```
    *Note: On Windows, run the command in PowerShell; on macOS/Linux, `bash scripts/setup.sh` is also available.*
+   The default command registers Chrome and authorizes the development ID. The Edge store build has a store-assigned ID and needs its own Edge registration. Installing the extension from the store does not install the local CLI bridge. If your local environment is already set up, update registration directly with `node scripts/install-native.mjs --browser edge --extension-id YOUR_EDGE_EXTENSION_ID`.
 2. **Load the Extension**:
-   - Enable Developer mode in `chrome://extensions` and load the `dist/extension` directory.
+   - For development builds, enable Developer mode in `chrome://extensions` or `edge://extensions` and load `dist/extension`. If you already installed the store version, use that installation.
 3. **Verify Connection**:
    - Open Extension Settings, choose **"Local Mode"**, select your installed CLI, and click **"Refresh Connection"** until status shows connected.
+   - If the bridge is unavailable, open **"Set up local bridge"** to detect the browser and extension ID, copy the installation command, or download a repair script. Updates to the same store listing keep the same ID.
 
 ---
 

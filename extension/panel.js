@@ -13,7 +13,7 @@ function showDataUse(accepted) {
 const names = { codex: 'Codex CLI', claude: 'Claude Code', gemini: 'Gemini CLI', qwen: 'Qwen Code', kimi: 'Kimi CLI' };
 const types = { code: '编程题', single: '单选题', multiple: '多选题', judge: '判断题', blank: '填空题', text: '简答题' };
 const phases = { awaitingManual: '等待人工提交并换题', idle: '准备就绪', read: '题目已读取', reading: '读取题目中', solving: '模型求解中', delaying: '按配置等待填写', ready: '答案待复核', applying: '写入并核对中', filled: '已填写，未提交', testing: '等待样例执行结果', waiting: '等待平台开放操作', paused: '任务已暂停', stopped: '任务已停止', error: '任务遇到问题', interrupted: '任务已中断' };
-let currentState = null, connection = null, localBusy = false;
+let currentState = null, connection = null, localBusy = false, nativeBridgeFailed = false;
 let lastLogSignature = '', apiBusy = false;
 const apiForm = createApiForm({
   command,
@@ -93,7 +93,12 @@ async function saveSettings() {
   settingsStatus('已保存。外观与页内组件开关立即生效，任务配置在下次开始时生效。');
   return { connectionMode, pacing, provider, count, run, runInBackground };
 }
-function showError(message) { $('error').textContent = message || ''; $('error').hidden = !message; }
+function isNativeError(message) { return /本地 CLI 桥|native messaging host|本地桥响应超时/i.test(message || ''); }
+function showError(message) {
+  $('error').textContent = message || ''; $('error').hidden = !message;
+  if ($('connection-mode').value === 'local' && isNativeError(message)) nativeBridgeFailed = true;
+  $('native-recovery').hidden = $('connection-mode').value !== 'local' || !nativeBridgeFailed;
+}
 async function command(action, data = {}) {
   const response = await chrome.runtime.sendMessage({ type: 'command', action, ...data });
   if (!response?.ok) throw new Error(response?.error || '扩展后台暂不可用，请重新打开侧栏');
@@ -190,12 +195,18 @@ async function refreshHealth() {
     const health = await command('health', { connectionMode: mode });
     if (epoch !== healthEpoch || mode !== $('connection-mode').value) return;
     connection = mode === 'api' && !health.ready ? null : health;
+    if (mode === 'local') {
+      nativeBridgeFailed = false;
+      if (currentState && isNativeError(currentState.error)) currentState = { ...currentState, error: '' };
+      if (isNativeError($('error').textContent)) showError('');
+    }
     $('connection-status').textContent = mode === 'api' ? health.ready ? 'API 已配置 · 未测试生成' : health.locked ? 'API 密钥已锁定 · 请在设置解锁' : '请先配置 API 地址、密钥和模型' : '本地桥已连接';
     $('connection-status').title = mode === 'api' ? '配置就绪不代表账号、额度或模型已可用' : `Node ${health.nodeVersion}`;
     $('connection-status').className = connection ? 'status ok' : 'status bad'; $('setup-help').hidden = true;
   } catch (error) {
     if (epoch !== healthEpoch || mode !== $('connection-mode').value) return;
-    connection = null; $('connection-status').textContent = mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode === 'api'; showError(error.message);
+    connection = null; if (mode === 'local') nativeBridgeFailed = true;
+    $('connection-status').textContent = mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode === 'api'; showError(error.message);
   } finally {
     if (epoch === healthEpoch) { $('refresh').disabled = false; providerDetail(); if (currentState) render({ ...currentState, error: connection ? currentState.error : $('error').textContent }); }
   }
@@ -209,10 +220,14 @@ async function perform(action, data) {
 function showConnectionMode() {
   const api = $('connection-mode').value === 'api';
   $('local-settings').hidden = api; $('api-settings').hidden = !api; $('refresh').hidden = api;
+  $('native-recovery').hidden = api || !nativeBridgeFailed;
   updateSummary();
 }
 $('connection-mode').addEventListener('change', () => { connection = null; showError(''); if (currentState) render({ ...currentState, error: '' }); showConnectionMode(); void refreshHealth(); });
 $('refresh').addEventListener('click', refreshHealth);
+window.addEventListener('focus', () => {
+  if (nativeBridgeFailed && $('connection-mode').value === 'local' && !$('refresh').disabled && !currentState?.busy && !localBusy && !settingsSaving) void refreshHealth();
+});
 $('provider').addEventListener('change', providerDetail);
 $('read').addEventListener('click', () => perform('read'));
 $('page-controls').addEventListener('click', () => performConfigured('enableControls'));

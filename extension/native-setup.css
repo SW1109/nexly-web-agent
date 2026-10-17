@@ -1,0 +1,20 @@
+.native-setup-page { --panel-width: 760px; }
+.native-setup-page .header { position: static; }
+.native-setup-page main { padding-bottom: 24px; }
+.native-setup-page .header > a { flex-shrink: 0; font-size: 12px; }
+.native-setup-page .section > h2 { font-size: 18px; }
+.native-setup-page .section-heading { flex-wrap: wrap; }
+#bridge-extension-id { min-width: 0; font: 12px ui-monospace, monospace; }
+.bridge-steps { padding-left: 22px; margin-bottom: 0; }
+.bridge-steps > li { padding-left: 4px; margin-top: 24px; }
+.bridge-steps > li::marker { color: var(--blue); font-weight: 600; }
+.bridge-steps p { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.bridge-command { padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.bridge-command code { display: block; overflow-wrap: anywhere; white-space: pre-wrap; margin-bottom: 8px; }
+.bridge-command textarea { width: 100%; resize: vertical; min-height: 80px; background: var(--input-bg); color: var(--ink); border: 1px solid var(--input-border); border-radius: var(--radius-sm); padding: 10px; font: 12px/1.7 ui-monospace, monospace; margin-bottom: 8px; }
+#bridge-action-status { min-height: 1.6em; }
+#bridge-check-status[data-error="true"] { color: var(--danger-text); }
+#bridge-check-status[data-error="false"] { color: var(--success); }
+#bridge-providers { padding-left: 20px; line-height: 1.9; }
+#bridge-check-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 400px) { .native-setup-page .secret-field { align-items: stretch; flex-direction: column; } }
