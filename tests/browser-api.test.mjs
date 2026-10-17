@@ -70,7 +70,7 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
   let context = await chromium.launchPersistentContext(join(temporary, 'profile'), options);
   t.after(async () => { await context.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); await rm(temporary, { recursive: true, force: true }); });
   let background = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-  await background.evaluate(async () => { await chrome.storage.local.set({ connectionMode: 'api', pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }); });
+  await background.evaluate(async () => { await chrome.storage.local.set({ connectionMode: 'api', count: 1, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }); });
   const page = await context.newPage();
   t.after(async () => { if (!page.isClosed()) console.log('API UI status:', await page.locator('#api-status').textContent().catch(() => ''), 'page errors:', errors); }); page.on('pageerror', (error) => errors.push(error.message)); page.setDefaultTimeout(10000);
   const panelUrl = `chrome-extension://${manifest.key ? 'hbgbhhljnmlognjblnchioheiclcopel' : ''}/panel.html`;

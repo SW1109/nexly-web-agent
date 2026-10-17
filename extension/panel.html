@@ -3,12 +3,13 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuizMate · 智答伴侣</title><link rel="stylesheet" href="panel.css"></head>
 <body>
 <header class="header">
-  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.3</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
+  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.4</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
   <button id="open-settings" class="settings-button" type="button" aria-controls="settings-view" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="white"/><circle cx="15" cy="17" r="3" fill="white"/></svg>设置</button>
 </header>
 <div class="connection-strip"><p id="connection-status" class="status" role="status">正在检查模型配置…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
 <div id="error" class="error global-error" role="alert" hidden></div>
-<div id="native-recovery" class="notice global-error" hidden><strong>本地桥需要设置</strong><p>自动读取当前浏览器与扩展 ID，获取安装或修复命令。</p><a class="bridge-setup-link" href="native-setup.html" target="_blank" rel="noopener noreferrer">设置本地桥 →</a></div>
+<div id="native-recovery" class="notice global-error" hidden><strong>本地桥连接需要恢复</strong><p>已安装本地桥时可重新检测；首次安装或更换浏览器时，打开设置获取对应命令。</p><div class="recovery-actions"><button id="retry-native" class="secondary" type="button">重新检测连接</button><a class="bridge-setup-link" href="native-setup.html" target="_blank" rel="noopener noreferrer">设置本地桥 →</a></div></div>
+<div id="page-recovery" class="notice global-error" hidden><p>回到练习页并等待题目加载后重试。需要授权时会请求当前站点的访问权限。</p><button id="retry-page" class="secondary" type="button">重新授权并读取</button><p class="caption">此操作只读取题目。</p></div>
 <nav class="resource-links" aria-label="帮助与反馈"><a href="help.html" target="_blank" rel="noopener noreferrer">操作手册</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">提 Bug</a><a data-project-link="feedback" target="_blank" rel="noopener noreferrer">建议</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">赞助</a></nav>
 <main>
 <section id="data-consent" class="section notice" aria-labelledby="data-use-title" hidden>
@@ -35,7 +36,7 @@
   <section id="answer-section" class="section" aria-labelledby="answer-title" hidden>
     <div class="section-heading"><h2 id="answer-title">答案预览</h2><span id="confidence" class="badge"></span></div><pre id="answer-body" class="preview answer"></pre><p id="explanation" class="muted"></p><p id="fill-status" class="caption" aria-live="polite"></p><div class="button-row"><button id="fill" class="secondary" type="button">填入此答案</button><button id="run" class="quiet" type="button">执行样例</button></div>
   </section>
-  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><button id="clear-history" class="quiet" type="button">清除练习记录</button><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details>
+  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><div class="log-tools"><button id="clear-history" class="quiet" type="button">清除练习记录</button><button id="log-latest" class="quiet" type="button" hidden>回到最新</button></div><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details>
   <footer><span class="shortcut">Alt ⇧ N</span> 开始 / 暂停 / 继续<span class="footer-note">运行中的任务绑定启动时的练习页</span></footer>
 </div>
 <div id="settings-view" hidden>

@@ -3,7 +3,9 @@ import { DEFAULT_PACING, PACING_FIELDS, validatePacing } from './lib/pacing.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, OPACITY, validateAppearance } from './lib/appearance.js';
 import { createApiForm } from './lib/api-form.js';
 import { ensurePracticeAccess } from './lib/tab-access.js';
+import { createTaskLog } from './lib/panel-log.js';
 const $ = (id) => document.getElementById(id);
+const renderLog = createTaskLog({ list: $('log'), count: $('log-count'), jump: $('log-latest') });
 for (const link of document.querySelectorAll('[data-project-link]')) link.href = PROJECT[link.dataset.projectLink];
 let dataUseAccepted = false;
 function showDataUse(accepted) {
@@ -15,7 +17,8 @@ const names = { codex: 'Codex CLI', claude: 'Claude Code', gemini: 'Gemini CLI',
 const types = { code: '编程题', single: '单选题', multiple: '多选题', judge: '判断题', blank: '填空题', text: '简答题' };
 const phases = { awaitingManual: '等待人工提交并换题', idle: '准备就绪', read: '题目已读取', reading: '读取题目中', solving: '模型求解中', delaying: '按配置等待填写', ready: '答案待复核', applying: '写入并核对中', filled: '已填写，未提交', testing: '等待样例执行结果', waiting: '等待平台开放操作', paused: '任务已暂停', stopped: '任务已停止', error: '任务遇到问题', interrupted: '任务已中断' };
 let currentState = null, connection = null, localBusy = false, nativeBridgeFailed = false;
-let lastLogSignature = '', apiBusy = false;
+let localOperation = null, apiBusy = false, healthChecking = false;
+const operationLabels = { read: '正在读取题目…', enableControls: '正在启用页内组件…', start: '正在启动任务…', fill: '正在填写答案…', run: '正在执行样例…', pause: '正在暂停…', resume: '正在继续…', stop: '正在停止任务…' };
 const apiForm = createApiForm({
   command,
   onBusy(value) { apiBusy = value; if (currentState) render(currentState); },
@@ -62,19 +65,7 @@ function showPacing(pacing) {
   $('typewriter').checked = pacing.typewriter;
 }
 async function performConfigured(action, extra = {}) {
-  if (localBusy || apiBusy || currentState?.busy || settingsSaving) return;
-  localBusy = true;
-  if (currentState) render(currentState);
-  try {
-    // 在保存配置等异步工作之前，从本次点击发起站点授权。
-    if (['start', 'enableControls'].includes(action)) await ensurePracticeAccess();
-    const settings = await saveSettings();
-    await perform(action, { ...settings, ...extra }, false);
-  } catch (error) { showError(error.message); }
-  finally {
-    localBusy = false;
-    if (currentState) render({ ...currentState, error: $('error').textContent });
-  }
+  await perform(action, extra, true);
 }
 async function saveSettings() {
   const raw = { typewriter: $('typewriter').checked };
@@ -96,37 +87,31 @@ async function saveSettings() {
   return { connectionMode, pacing, provider, count, run, runInBackground };
 }
 function isNativeError(message) { return /本地 CLI 桥|native messaging host|本地桥响应超时/i.test(message || ''); }
+function isPageError(message) { return /站点权限|授权本站|未读到完整题目|重新读取|页面尚未加载|暂时无法读取练习页|多个活动 frame|没有识别到练习题|练习标签被浏览器休眠/i.test(message || ''); }
 function showError(message) {
   $('error').textContent = message || ''; $('error').hidden = !message;
-  if ($('connection-mode').value === 'local' && isNativeError(message)) nativeBridgeFailed = true;
+  if ($('connection-mode').value === 'local' && isNativeError(message)) {
+    nativeBridgeFailed = true; connection = null;
+    if (!healthChecking) {
+      $('connection-status').textContent = '本地桥未连接';
+      $('connection-status').className = 'status bad';
+    }
+  }
   $('native-recovery').hidden = $('connection-mode').value !== 'local' || !nativeBridgeFailed;
+  $('page-recovery').hidden = !isPageError(message);
 }
 async function command(action, data = {}) {
   const response = await chrome.runtime.sendMessage({ type: 'command', action, ...data });
   if (!response?.ok) throw new Error(response?.error || '扩展后台暂不可用，请重新打开侧栏');
   return response.data;
 }
-function renderLog(entries) {
-  // 明确按记录时间倒序；同毫秒的记录让后写入者在前，不依赖收到的数组顺序。
-  const newestFirst = entries.map((entry, index) => ({ entry, index })).sort((a, b) => b.entry.time - a.entry.time || b.index - a.index).map(({ entry }) => entry);
-  const signature = JSON.stringify(newestFirst);
-  if (signature === lastLogSignature) return;
-  lastLogSignature = signature;
-  $('log-count').textContent = String(entries.length);
-  $('log').replaceChildren(...newestFirst.map((entry) => {
-    const item = document.createElement('li');
-    const time = document.createElement('time'); time.dateTime = new Date(entry.time).toISOString();
-    time.textContent = new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false });
-    const content = document.createElement('span'); content.textContent = entry.text; item.append(time, content);
-    return item;
-  }));
-  // 新记录回到顶部；没有新增日志的 CLI 心跳不重绘，也不打断用户滚动查看历史。
-  $('log').scrollTop = 0;
-}
 function render(state) {
   currentState = state;
+  showError(state.error);
   const busy = state.busy || localBusy || apiBusy || settingsSaving;
-  for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter', 'auto-controls', 'connection-mode', 'refresh']) $(id).disabled = busy;
+  for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter', 'auto-controls', 'connection-mode', 'controls-opacity', 'reset-position', 'retry-page']) $(id).disabled = busy;
+  for (const id of ['refresh', 'retry-native']) $(id).disabled = busy || healthChecking;
+  $('close-settings').disabled = settingsSaving;
   $('save-settings').disabled = busy; apiForm.setDisabled(busy);
   for (const input of pacingInputs) input.disabled = busy;
   $('solve').disabled ||= !connection || !dataUseAccepted;
@@ -134,11 +119,18 @@ function render(state) {
   $('run').disabled ||= !dataUseAccepted;
   $('clear-history').disabled = busy;
   $('revoke-data-use').disabled = busy || !dataUseAccepted;
-  $('task-controls').hidden = !state.busy;
+  $('task-controls').hidden = !state.busy && !localBusy;
   $('pause').textContent = state.paused ? '继续' : '暂停';
-  $('pause').disabled = !state.busy;
-  $('task-status').textContent = `${phases[state.phase] || state.phase}${state.phase === 'solving' ? ` · ${state.elapsedSeconds || 0} 秒` : ''}${state.typingProgress ? ` · ${state.typingProgress.written}/${state.typingProgress.total}` : ''}${state.completed ? ` · 已填写 ${state.completed} 题` : ''}`;
-  $('task-status').dataset.busy = String(Boolean(state.busy));
+  $('pause').disabled = !state.busy || Boolean(state.operation) || localBusy;
+  $('stop').disabled = localOperation?.action === 'stop' || (!state.busy && !localBusy);
+  const action = localOperation?.action || state.operation;
+  const status = operationLabels[action] || `${phases[state.phase] || state.phase}${state.phase === 'solving' ? ` · ${state.elapsedSeconds || 0} 秒` : ''}${state.typingProgress ? ` · ${state.typingProgress.written}/${state.typingProgress.total}` : ''}${state.completed ? ` · 已填写 ${state.completed} 题` : ''}`;
+  $('task-status').textContent = status;
+  $('task-status').dataset.busy = String(Boolean(state.busy || localBusy));
+  const reading = action === 'read' || action === 'enableControls' || state.phase === 'reading' && state.busy;
+  $('read').textContent = reading ? '正在读取…' : '重新读取 ↻';
+  $('read').setAttribute('aria-busy', String(Boolean(reading)));
+  document.querySelector('.question-section').setAttribute('aria-busy', String(Boolean(reading)));
   $('empty').hidden = Boolean(state.question);
   $('question').hidden = !state.question;
   if (state.question) {
@@ -179,7 +171,6 @@ function render(state) {
       : state.busy ? '答案已返回，接下来自动填写。'
       : '答案尚未填写，可点击下方按钮填入页面。';
   }
-  showError(state.error);
   renderLog(state.log);
 }
 function providerDetail() {
@@ -191,7 +182,8 @@ function providerDetail() {
 let healthEpoch = 0;
 async function refreshHealth() {
   const epoch = ++healthEpoch, mode = $('connection-mode').value;
-  $('refresh').disabled = true;
+  healthChecking = true;
+  if (currentState) render(currentState);
   $('connection-status').textContent = mode === 'api' ? '正在检查 API 配置…' : '正在检测本地桥…';
   try {
     const health = await command('health', { connectionMode: mode });
@@ -208,19 +200,37 @@ async function refreshHealth() {
   } catch (error) {
     if (epoch !== healthEpoch || mode !== $('connection-mode').value) return;
     connection = null; if (mode === 'local') nativeBridgeFailed = true;
-    $('connection-status').textContent = mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode === 'api'; showError(error.message);
+    $('connection-status').textContent = mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode === 'api';
+    if (currentState) currentState = { ...currentState, error: error.message };
+    showError(error.message);
   } finally {
-    if (epoch === healthEpoch) { $('refresh').disabled = false; providerDetail(); if (currentState) render({ ...currentState, error: connection ? currentState.error : $('error').textContent }); }
+    if (epoch === healthEpoch) { healthChecking = false; providerDetail(); if (currentState) render(currentState); }
   }
 }
-async function perform(action, data, requestAccess = true) {
-  localBusy = true; if (currentState) render(currentState);
+async function perform(action, data = {}, configured = false) {
+  const stopping = action === 'stop';
+  if (stopping ? localOperation?.action === 'stop' : localBusy || apiBusy || settingsSaving || currentState?.busy && !['pause', 'resume'].includes(action)) return;
+  const operation = { action };
+  localOperation = operation; localBusy = true;
+  if (currentState) render({ ...currentState, error: '' });
   try {
-    if (requestAccess && ['read', 'start', 'enableControls'].includes(action)) await ensurePracticeAccess();
-    const state = await command(action, data); render(state);
+    // 站点授权始终由本次用户点击发起；停止后不再派发旧操作。
+    if (['read', 'start', 'enableControls'].includes(action)) await ensurePracticeAccess();
+    if (localOperation !== operation) return;
+    if (configured) data = { ...await saveSettings(), ...data };
+    if (localOperation !== operation) return;
+    const state = await command(action, data);
+    if (localOperation === operation) render(state);
   }
-  catch (error) { showError(error.message); }
-  finally { localBusy = false; if (currentState) { const error = $('error').textContent; render({ ...currentState, error }); } }
+  catch (error) {
+    if (localOperation === operation) {
+      if (currentState) currentState = { ...currentState, error: error.message };
+      showError(error.message);
+    }
+  }
+  finally {
+    if (localOperation === operation) { localOperation = null; localBusy = false; if (currentState) render(currentState); }
+  }
 }
 function showConnectionMode() {
   const api = $('connection-mode').value === 'api';
@@ -230,6 +240,8 @@ function showConnectionMode() {
 }
 $('connection-mode').addEventListener('change', () => { connection = null; showError(''); if (currentState) render({ ...currentState, error: '' }); showConnectionMode(); void refreshHealth(); });
 $('refresh').addEventListener('click', refreshHealth);
+$('retry-native').addEventListener('click', refreshHealth);
+$('retry-page').addEventListener('click', () => perform('read'));
 window.addEventListener('focus', () => {
   if (nativeBridgeFailed && $('connection-mode').value === 'local' && !$('refresh').disabled && !currentState?.busy && !localBusy && !settingsSaving) void refreshHealth();
 });
@@ -247,7 +259,17 @@ async function commitSettings(close = false) {
   catch (error) { settingsStatus(`未保存：${error.message}`, true); }
   finally { settingsSaving = false; $('save-settings').textContent = '保存设置'; if (currentState) render(currentState); }
 }
-async function leaveSettings() { if (apiBusy || settingsSaving) return; if (settingsDirty) await commitSettings(true); else showSettings(false); }
+async function leaveSettings() {
+  if (settingsSaving) return;
+  if (settingsDirty && !localBusy && !apiBusy && !currentState?.busy) await commitSettings(true);
+  else {
+    if (settingsDirty) settingsStatus('任务进行中，未保存的更改已保留；任务结束后可保存。');
+    showSettings(false);
+  }
+}
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !$('settings-view').hidden) { event.preventDefault(); void leaveSettings(); }
+});
 $('open-settings').addEventListener('click', () => { if ($('settings-view').hidden) showSettings(true); else void leaveSettings(); });
 $('close-settings').addEventListener('click', leaveSettings);
 $('save-settings').addEventListener('click', () => commitSettings());
@@ -257,7 +279,7 @@ $('reset-position').addEventListener('click', async () => {
   $('reset-position').disabled = true;
   try { await chrome.storage.local.set({ controlsPosition: DEFAULT_POSITION }); $('position-status').textContent = '已移回右下角。'; }
   catch (error) { $('position-status').textContent = `位置未保存：${error.message}`; }
-  finally { $('reset-position').disabled = false; }
+  finally { if (currentState) render(currentState); else $('reset-position').disabled = false; }
 });
 for (const input of $('settings-view').querySelectorAll('input,select')) input.addEventListener('input', () => {
   input.setCustomValidity(''); input.removeAttribute('aria-invalid'); settingsDirty = true;
@@ -283,7 +305,12 @@ $('clear-history').addEventListener('click', async () => {
   if (!confirm('清除本浏览器会话中的题目、答案和任务记录？不会清除配置，也不会修改网页上已填写的内容。')) return;
   try { render(await command('clearHistory')); } catch (error) { showError(error.message); }
 });
-chrome.runtime.onMessage.addListener((message, sender) => { if (sender.id === chrome.runtime.id && message?.type === 'state') render(message.state); });
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id || message?.type !== 'state') return;
+  const justStopped = ['stopped', 'interrupted'].includes(message.state.phase) && (currentState?.phase !== message.state.phase || currentState?.busy);
+  if (justStopped && localOperation?.action !== 'stop') { localOperation = null; localBusy = false; }
+  render(message.state);
+});
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.dataConsentVersion) showDataUse(changes.dataConsentVersion.newValue === DATA_CONSENT_VERSION);
 });
