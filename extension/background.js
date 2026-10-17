@@ -8,6 +8,7 @@ import { validatePacing } from './lib/pacing.js';
 import { installPageControls, removePageControls } from './lib/page-controls.js';
 import { navigationAction } from './lib/navigation.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, validateAppearance, validatePosition } from './lib/appearance.js';
+import { activePracticeTab } from './lib/tab-access.js';
 
 const emptyState = () => ({ phase: 'idle', busy: false, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', connectionMode: 'local', model: '', elapsedSeconds: 0 });
 let state = emptyState(), controller = null;
@@ -162,14 +163,12 @@ async function pacedWait(task, milliseconds) {
   await gate(task);
 }
 async function activeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !/^https?:\/\//.test(tab.url || '')) throw new Error('请先打开普通网页中的练习题，再点击扩展');
-  return tab;
+  return activePracticeTab();
 }
 async function scan(tabId) {
   let results;
   try { results = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: pageAction, args: ['read'] }); }
-  catch { throw new Error('暂时无法读取页面。请点击“授权当前练习站点”，并保持练习页打开。'); }
+  catch { throw new Error('暂时无法读取练习页。请点击“授权本站”并允许访问，再重新获取；若已授权，请等待页面加载完成。'); }
   const frameResults = new Map(results.map((item) => [item.frameId, item.result?.frame]));
   const frames = [...frameResults.values()].some((frame) => frame?.children?.length) ? await chrome.webNavigation.getAllFrames({ tabId }) : [];
   const displayed = (frameId, seen = new Set()) => {

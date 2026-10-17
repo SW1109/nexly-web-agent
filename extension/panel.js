@@ -2,6 +2,7 @@ import { PROJECT, DATA_CONSENT_VERSION } from './lib/project-info.js';
 import { DEFAULT_PACING, PACING_FIELDS, validatePacing } from './lib/pacing.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, OPACITY, validateAppearance } from './lib/appearance.js';
 import { createApiForm } from './lib/api-form.js';
+import { ensurePracticeAccess } from './lib/tab-access.js';
 const $ = (id) => document.getElementById(id);
 for (const link of document.querySelectorAll('[data-project-link]')) link.href = PROJECT[link.dataset.projectLink];
 let dataUseAccepted = false;
@@ -62,12 +63,13 @@ function showPacing(pacing) {
 }
 async function performConfigured(action, extra = {}) {
   if (localBusy || apiBusy || currentState?.busy || settingsSaving) return;
-  const saving = saveSettings();
   localBusy = true;
   if (currentState) render(currentState);
   try {
-    const settings = await saving;
-    await perform(action, { ...settings, ...extra });
+    // 在保存配置等异步工作之前，从本次点击发起站点授权。
+    if (['start', 'enableControls'].includes(action)) await ensurePracticeAccess();
+    const settings = await saveSettings();
+    await perform(action, { ...settings, ...extra }, false);
   } catch (error) { showError(error.message); }
   finally {
     localBusy = false;
@@ -211,9 +213,12 @@ async function refreshHealth() {
     if (epoch === healthEpoch) { $('refresh').disabled = false; providerDetail(); if (currentState) render({ ...currentState, error: connection ? currentState.error : $('error').textContent }); }
   }
 }
-async function perform(action, data) {
+async function perform(action, data, requestAccess = true) {
   localBusy = true; if (currentState) render(currentState);
-  try { const state = await command(action, data); render(state); }
+  try {
+    if (requestAccess && ['read', 'start', 'enableControls'].includes(action)) await ensurePracticeAccess();
+    const state = await command(action, data); render(state);
+  }
   catch (error) { showError(error.message); }
   finally { localBusy = false; if (currentState) { const error = $('error').textContent; render({ ...currentState, error }); } }
 }
@@ -260,16 +265,7 @@ for (const input of $('settings-view').querySelectorAll('input,select')) input.a
 });
 $('pause').addEventListener('click', () => perform(currentState?.paused ? 'resume' : 'pause'));
 $('stop').addEventListener('click', () => perform('stop'));
-$('permission').addEventListener('click', async () => {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || !/^https?:\/\//.test(tab.url || '')) throw new Error('请先选中练习网页');
-    const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-    const origins = [...new Set([tab.url, ...(frames || []).map((frame) => frame.url)].filter((url) => /^https?:\/\//.test(url)).map((url) => `${new URL(url).origin}/*`))];
-    if (!await chrome.permissions.request({ origins })) throw new Error('未获得站点权限，无法读取跨域练习区域');
-    await perform('read');
-  } catch (error) { showError(error.message); }
-});
+$('permission').addEventListener('click', () => perform('read'));
 $('data-consent-check').addEventListener('change', () => { $('accept-data-use').disabled = !$('data-consent-check').checked; });
 $('accept-data-use').addEventListener('click', async () => {
   if (!$('data-consent-check').checked) return;

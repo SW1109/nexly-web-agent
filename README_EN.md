@@ -75,7 +75,7 @@ Best for users who already have configured CLI tools such as Codex, Claude Code,
 
 1. **Reading Questions**:
    - Navigate to an exercise page where assistance is permitted, then click **"Re-read"** in the side panel (or trigger it from the in-page floating widget).
-   - The extension automatically parses problem descriptions, types, options, and code editors. For cross-origin iframes, click "Authorize this site" once.
+   - The extension automatically parses problem descriptions, types, options, and code editors. Reading or starting a practice requests access to the current site and embedded frames when needed, then continues after approval. Use "Authorize this site" to retry.
 2. **Preview vs. Answer**:
    - **Preview Only**: Queries the model to display explanations and recommended answers without modifying web page content.
    - **Start Answering**: When confidence exceeds threshold, the extension automatically fills options/inputs and verifies the written result.

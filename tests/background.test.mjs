@@ -7,6 +7,7 @@ const until = async (predicate) => { for (let i = 0; i < 1000; i++) { if (predic
 
 test('background workflow uses JSON-safe Gemini injections and verifies freshness, pause, cancel and confidence gates', async (t) => {
   let saved = null, question = structuredClone(single), active = true, focused = true, frameFocused = true, writes = 0, fillResponder = null;
+  let tabUrlVisible = true, pageReadable = true;
   const shortcut = event(), navigated = event(), storageChanged = event();
   const localSettings = {}, appearanceMessages = [];
   let navigationQuestion = null, navigationQueue = [], navigationClicks = 0, editorReadyAt = 0, navigationEditorDelay = 0, hiddenFrame = false, runClicks = 0, runAvailable = true, runFailure = null, emptyInjection = false;
@@ -15,10 +16,10 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   globalThis.chrome = {
     storage: { onChanged: storageChanged, local: { setAccessLevel: async () => {}, set: async (patch) => { Object.assign(localSettings, patch); }, get: async () => ({ dataConsentVersion: 1, ...localSettings, provider: 'gemini', count: 1, runAfterFill: false, runInBackground: false, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }) }, session: { setAccessLevel: async () => {}, get: async () => ({}), set: async ({ taskState }) => { saved = structuredClone(taskState); } } },
     runtime: { id: 'test', getURL: (path) => `chrome-extension://test/${path}`, onMessage: commands, sendMessage: async () => {}, connectNative: () => port },
-    tabs: { query: async () => [{ id: 1, url: single.pageUrl }], get: async () => ({ id: 1, windowId: 1, active }), onActivated: activated, sendMessage: async (_tabId, message) => { if (message.type === 'page-appearance') { appearanceMessages.push(message); return; } assert.equal(message.type, 'page-state'); assert.equal(message.state.question, undefined); assert.equal(message.state.answer, undefined); } },
+    tabs: { query: async () => [{ id: 1, ...(tabUrlVisible ? { url: single.pageUrl } : {}) }], get: async () => ({ id: 1, windowId: 1, active }), onActivated: activated, sendMessage: async (_tabId, message) => { if (message.type === 'page-appearance') { appearanceMessages.push(message); return; } assert.equal(message.type, 'page-state'); assert.equal(message.state.question, undefined); assert.equal(message.state.answer, undefined); } },
     windows: { get: async () => ({ focused }), onFocusChanged: focus },
     commands: { onCommand: shortcut },
-    webNavigation: { onCompleted: navigated, getAllFrames: async () => [{ frameId: 0, parentFrameId: -1 }, { frameId: 4, parentFrameId: 0, url: single.pageUrl }, { frameId: 7, parentFrameId: 0, url: single.pageUrl + '?cached' }] },
+    webNavigation: { onCompleted: navigated, getFrame: async () => ({ frameId: 0, url: single.pageUrl }), getAllFrames: async () => [{ frameId: 0, parentFrameId: -1 }, { frameId: 4, parentFrameId: 0, url: single.pageUrl }, { frameId: 7, parentFrameId: 0, url: single.pageUrl + '?cached' }] },
     sidePanel: { setPanelBehavior: async () => {} },
     scripting: { executeScript: async ({ args, world, target }) => {
       assert.equal(target.tabId, 1, 'must stay bound to the original exercise tab');
@@ -28,6 +29,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
         if (value === undefined) throw new TypeError(`Error at property 'args': Error at index ${index}: Value is unserializable.`);
       }
       const [action, payload] = JSON.parse(JSON.stringify(args));
+      if (action === 'read' && !pageReadable) throw new Error('Cannot access contents of the page. Extension manifest must request permission to access the respective host.');
       if (action === 'find') return [{ result: { ok: true, candidates: (navigationQuestion || navigationQueue.length) && target.frameIds?.[0] === 0 ? [{ key: 'random', label: '随机一题', rank: 1, random: true, disabled: false }] : [] } }];
       if (action === 'click') { assert.equal(target.frameIds[0], 0); question = structuredClone(navigationQueue.length ? navigationQueue.shift() : navigationQuestion); navigationQuestion = null; navigationClicks++; editorReadyAt = Date.now() + navigationEditorDelay; return [{ result: { ok: true, clicked: true, navigationLabel: '随机一题', random: true } }]; }
       if (action === 'focusState') return [{ result: { ok: true, visible: true, focused: frameFocused } }];
@@ -53,7 +55,16 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
 
   assert.equal((await command('start', { provider: 'gemini', fill: 'false' })).ok, false);
   assert.equal(outbound.length, 0);
+  // 商店首次安装或侧栏常驻后切换站点：url 被隐藏，不代表用户没有打开练习页。
+  tabUrlVisible = false; pageReadable = false;
+  const needsAccess = await command('read');
+  assert.equal(needsAccess.ok, false);
+  assert.match(needsAccess.error, /授权本站/);
+  assert.doesNotMatch(needsAccess.error, /请先打开普通网页/);
+  pageReadable = true;
   assert.equal((await command('read')).ok, true);
+  assert.equal(saved.question.questionId, single.questionId);
+  tabUrlVisible = true;
   let offset = outbound.length;
   await command('start', { provider: 'gemini' });
   let request = await nextSolve(offset);
