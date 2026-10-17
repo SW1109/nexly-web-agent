@@ -83,7 +83,7 @@ async function saveSettings() {
     validateInput(input, input.value === '' ? `请输入${field.label}` : `${field.label}应为 ${field.min}～${field.max} 的整数`);
     raw[input.dataset.pacing] = Number(input.value);
   }
-  validateInput($('count'), '每批题数应为 1～20 的整数');
+  validateInput($('count'), '每批题数应为 1～100 的整数');
   const pacing = validatePacing(raw), provider = $('provider').value, count = Number($('count').value), run = $('run-after-fill').checked, runInBackground = $('background-run').checked;
   const controlsAppearance = validateAppearance({ opacity: Number($('controls-opacity').value) });
   const autoControls = $('auto-controls').checked;
@@ -295,7 +295,7 @@ try {
   $('connection-mode').value = connectionMode === 'api' ? 'api' : 'local';
   try { await apiForm.load(); } catch (error) { settingsStatus(error.message, true); }
   showConnectionMode();
-  if (Number.isInteger(count) && count >= 1 && count <= 20) $('count').value = count;
+  if (Number.isInteger(count) && count >= 1 && count <= 100) $('count').value = count;
   $('run-after-fill').checked = runAfterFill === true;
   $('background-run').checked = runInBackground !== false;
   $('auto-controls').checked = autoControls !== false;

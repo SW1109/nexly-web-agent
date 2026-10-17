@@ -35,9 +35,9 @@ async function preferences(overrides = {}) {
   const saved = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'connectionMode']);
   const mode = connectionMode(overrides.connectionMode ?? saved.connectionMode ?? 'local');
   const provider = overrides.provider ?? saved.provider ?? 'codex';
-  const count = Number(overrides.count ?? saved.count ?? 1), run = overrides.run ?? saved.runAfterFill ?? false;
+  const count = Number(overrides.count ?? saved.count ?? 20), run = overrides.run ?? saved.runAfterFill ?? false;
   if (mode === 'local' && !PROVIDERS.includes(provider)) throw new Error('请选择受支持的本地 CLI');
-  if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error('每批题数应为 1～20');
+  if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('每批题数应为 1～100');
   if (typeof run !== 'boolean') throw new Error('执行样例选项必须为 true 或 false');
   const runInBackground = overrides.runInBackground ?? saved.runInBackground ?? true;
   if (typeof runInBackground !== 'boolean') throw new Error('后台运行选项必须为 true 或 false');

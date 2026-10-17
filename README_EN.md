@@ -22,7 +22,7 @@ QuizMate is designed for learning and practice environments where assistive tool
   - Executes in-page sample test cases after code insertion. If errors occur, the failure logs and problematic code can be analyzed by the AI for up to 2 automated repair attempts.
   - Code remains on the current problem after execution, whether passed or failed. Never clicks final submission.
 - **In-Page Floating Widget**
-  - Injects a lightweight floating control widget directly into the problem area. Expands on hover, supports dragging, and provides keyboard shortcuts for fine-tuning positioning to prevent frequent tab/window switching.
+  - Enabled by default and displayed automatically on authorized practice pages. Expands on hover, supports dragging, and provides keyboard shortcuts for fine-tuning positioning to prevent frequent tab/window switching.
 - **Strict Security & Privacy**
   - API keys are stored in Session Storage by default, with optional local AES-GCM-256 password-encrypted persistent storage.
   - Zero data collection, no telemetry, and no external tracking services.
@@ -80,7 +80,7 @@ Best for users who already have configured CLI tools such as Codex, Claude Code,
    - **Preview Only**: Queries the model to display explanations and recommended answers without modifying web page content.
    - **Start Answering**: When confidence exceeds threshold, the extension automatically fills options/inputs and verifies the written result.
 3. **Continuous Practice**:
-   - Supports batch practice from 1 to 20 questions. Choice and fill-in-the-blank questions automatically advance to the next problem upon verification; programming questions always pause and wait for manual user review and submission.
+   - Batch practice defaults to 20 questions and can be set from 1 to 100 questions. Choice and fill-in-the-blank questions automatically advance to the next problem upon verification; programming questions always pause and wait for manual user review and submission.
 4. **Shortcuts & Floating Controls**:
    - Default hotkey: `Alt + Shift + N` (Start / Pause / Resume).
    - Floating Widget: Expands on hover and collapses on leave. Drag to relocate, or use `Alt + Arrow keys` to nudge position.

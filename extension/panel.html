@@ -3,7 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuizMate · 智答伴侣</title><link rel="stylesheet" href="panel.css"></head>
 <body>
 <header class="header">
-  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.2</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
+  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.3</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
   <button id="open-settings" class="settings-button" type="button" aria-controls="settings-view" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="white"/><circle cx="15" cy="17" r="3" fill="white"/></svg>设置</button>
 </header>
 <div class="connection-strip"><p id="connection-status" class="status" role="status">正在检查模型配置…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
@@ -26,7 +26,7 @@
     <div class="question-tools"><button id="permission" class="quiet" type="button">授权本站</button><span aria-hidden="true">·</span><button id="page-controls" class="quiet" type="button">启用页内组件</button></div>
   </section>
   <section class="section action-section" aria-labelledby="actions-title">
-    <div class="section-heading"><h2 id="actions-title">开始练习</h2><span id="task-summary" class="caption">每批 1 题</span></div>
+    <div class="section-heading"><h2 id="actions-title">开始练习</h2><span id="task-summary" class="caption">每批 20 题</span></div>
     <div class="button-row"><button id="auto" class="primary" type="button">开始答题 <span aria-hidden="true">→</span></button><button id="solve" class="secondary" type="button">仅预览答案</button></div>
     <div id="task-controls" class="button-row" hidden><button id="pause" class="secondary" type="button">暂停</button><button id="stop" class="danger" type="button">停止任务</button></div>
     <p id="task-status" class="task-status" aria-live="polite">准备就绪</p>
@@ -71,7 +71,7 @@
   </section>
   <section class="section" aria-labelledby="batch-title">
     <h2 id="batch-title">连续作答</h2>
-    <div class="inline-field"><label for="count">每批题数 <span class="caption">1～20 题</span></label><input id="count" type="number" min="1" max="20" step="1" value="1" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
+    <div class="inline-field"><label for="count">每批题数 <span class="caption">1～100 题</span></label><input id="count" type="number" min="1" max="100" step="1" value="20" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">默认 20 题。普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
     <label class="checkbox"><input id="background-run" type="checkbox" checked><span>切换标签后继续作答<small>继续操作启动任务时的练习页</small></span></label>
     <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>失败时将本次日志交给 AI，最多自动修正 2 次；仅执行样例，提交仍由你操作</small></span></label>
   </section>

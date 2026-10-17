@@ -45,7 +45,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
   t.after(() => browser.close());
   const origin = `http://127.0.0.1:${server.address().port}`;
 
-  async function openPanel(denied = false) {
+  async function openPanel(denied = false, settings = {}) {
     const context = await browser.newContext();
     const practice = await context.newPage();
     await practice.goto(origin + '/practice-fixture.html');
@@ -53,10 +53,10 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
       const { pageAction } = await import('./lib/page.js');
       return pageAction('read');
     }));
-    await context.addInitScript(({ mainUrl, frameUrl, denied }) => {
+    await context.addInitScript(({ mainUrl, frameUrl, denied, settings }) => {
       const noopEvent = () => ({ addListener() {} });
       const granted = new Set();
-      const saved = { dataConsentVersion: 1, connectionMode: 'local' };
+      const saved = { dataConsentVersion: 1, connectionMode: 'local', ...settings };
       let state = { phase: 'idle', busy: false, paused: false, question: null, answer: null, log: [], error: '', completed: 0 };
       const frames = [{ frameId: 0, parentFrameId: -1, url: mainUrl }, { frameId: 1, parentFrameId: 0, url: frameUrl }, { frameId: 2, parentFrameId: 0, url: 'about:blank' }];
       window.__events = [];
@@ -103,7 +103,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
         },
         storage: { local: { async get() { return { ...saved }; }, async set(values) { Object.assign(saved, values); } }, onChanged: noopEvent() }
       };
-    }, { mainUrl, frameUrl, denied });
+    }, { mainUrl, frameUrl, denied, settings });
     const panel = await context.newPage();
     const errors = [];
     panel.on('pageerror', error => errors.push(error.message));
@@ -118,6 +118,15 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
     await t.test(`#${button} grants the main site and cross-origin practice frame before ${action}`, async () => {
       const { context, panel, practice, errors } = await openPanel();
       try {
+        assert.equal(await panel.locator('#count').inputValue(), '20');
+        assert.equal(await panel.locator('#count').getAttribute('max'), '100');
+        assert.equal(await panel.locator('#task-summary').textContent(), '每批 20 题');
+        assert.equal(await panel.locator('#auto-controls').isChecked(), true);
+        if (button === 'auto') {
+          await panel.locator('#open-settings').click();
+          await panel.locator('#count').fill('100');
+          await panel.locator('#close-settings').click();
+        }
         await panel.locator('#' + button).click();
         await panel.waitForFunction(() => window.__lastRead?.ok && !document.getElementById('question').hidden);
         const { requests, events, result, commands } = await panel.evaluate(() => ({ requests: window.__requests, events: window.__events, result: window.__lastRead, commands: window.__commands }));
@@ -125,6 +134,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
         assert.ok(events.some(event => event.kind === 'getFrame' && event.details.tabId === 7 && event.details.frameId === 0), 'a missing tabs.query URL must recover from the top frame');
         assert.ok(events.findIndex(event => event.kind === 'permission') < events.findIndex(event => event.kind === 'command' && event.action === action), 'permission must be granted before the practice command');
         assert.equal(commands.filter(command => command.action === action).length, 1);
+        if (button === 'auto') assert.equal(commands.find(command => command.action === 'start').count, 100);
         assert.equal(result.question.type, 'judge');
         assert.equal(result.question.options.length, 2);
         assert.deepEqual(result.question.options.map(option => option.text), ['正确(True)', '错误(False)']);
@@ -165,4 +175,19 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
       } finally { await context.close(); }
     });
   }
+
+  await t.test('a saved 100-question batch is restored and manual control preferences are retained', async () => {
+    const { context, panel } = await openPanel(false, { count: 100, autoControls: false });
+    try {
+      assert.equal(await panel.locator('#count').inputValue(), '100');
+      assert.equal(await panel.locator('#task-summary').textContent(), '每批 100 题');
+      assert.equal(await panel.locator('#auto-controls').isChecked(), false);
+      await panel.locator('#open-settings').click();
+      await panel.locator('#count').fill('101');
+      await panel.locator('#save-settings').click();
+      await panel.waitForFunction(() => document.getElementById('count').getAttribute('aria-invalid') === 'true');
+      assert.match(await panel.locator('#settings-status').textContent(), /1～100/);
+      assert.equal(await panel.evaluate(() => window.__commands.some(command => command.action === 'start')), false);
+    } finally { await context.close(); }
+  });
 });
