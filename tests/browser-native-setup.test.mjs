@@ -64,7 +64,7 @@ test('bridge setup UI recovers from denied store IDs, copies commands, downloads
   const errors = [];
   context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
   const panel = await context.newPage();
-  await panel.goto(origin + '/panel.html');
+  await panel.goto(origin + '/panel.html?view=practice');
   await panel.locator('#native-recovery').waitFor({ state: 'visible' });
   assert.match(await panel.locator('#error').textContent(), /forbidden/);
   await panel.locator('#open-settings').click();

@@ -2,7 +2,7 @@ import { DEFAULT_API_CONFIG, API_TIMEOUT, apiEndpoints, validateApiConfig, valid
 import { VAULT_PASSWORD, validateVaultPassword } from './api-vault.js';
 import { API_PROVIDERS, apiProvider } from './api-providers.js';
 const $ = (id) => document.getElementById(id);
-export function createApiForm({ command, onBusy, onChange, onSaved }) {
+export function createApiForm({ command, onBusy, onChange, onSaved, onInvalid = () => {} }) {
   let metadata = { config: { ...DEFAULT_API_CONFIG }, hasKey: false, rememberKey: false }, busy = false, probe = null;
   const ids = ['api-provider', 'api-url', 'api-key', 'api-model', 'api-protocol', 'api-timeout', 'remember-api-key', 'show-api-key', 'clear-api-key', 'api-fetch-models', 'api-test', 'api-password', 'api-password-confirm', 'unlock-api-key', 'lock-api-key'];
   $('api-timeout').min = API_TIMEOUT.min; $('api-timeout').max = API_TIMEOUT.max; $('api-timeout').step = 1;
@@ -15,7 +15,7 @@ export function createApiForm({ command, onBusy, onChange, onSaved }) {
     input.setAttribute('aria-invalid', 'true');
     if ($(`${id}-error`)) { $(`${id}-error`).textContent = message; $(`${id}-error`).hidden = false; }
     input.closest('details')?.setAttribute('open', '');
-    input.focus(); throw new Error(message);
+    onInvalid(input); input.focus(); throw new Error(message);
   }
   function clearErrors() {
     for (const id of Object.values(fields)) { $(id).removeAttribute('aria-invalid'); if ($(`${id}-error`)) $(`${id}-error`).hidden = true; }

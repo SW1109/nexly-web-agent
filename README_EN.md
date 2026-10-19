@@ -12,6 +12,12 @@ QuizMate is designed for learning and practice environments where assistive tool
 
 ## Key Features
 
+- **Unified study desk (0.6.0)**: Home, Courses, Practice and Records; categorized settings preserve existing CLI/API configurations. Read-only current-page recognition, bound task summaries, chapter search and scoped logs adapt from narrow side panels to desktop windows.
+
+- **Course workspace (0.6.0 preview)**: recognizes Chaoxing, Zhihuishu, iCourse163 and the specified Open University of China Experimental College Moodle site (`moodle.syxy.ouchn.cn`). Limited platform host permissions are bundled; other sites/API origins remain optional. Recognition alone does not start playback or call AI.
+- **Normal playback and practice**: resumes the visible HTML5 video and follows an unambiguous visible chapter list only after playback ends. Pauses at quizzes, locked chapters, verification prompts or uncertain pages. Select one practice question to preview/fill using the existing CLI/API engine; final submission stays manual. Automatic preview is opt-in and may incur provider charges.
+- **Preview limitations**: isolated browser fixtures are not live-platform acceptance. No fabricated study time, private progress APIs, verification/focus workarounds or automatic exam submission. The specified Moodle course URL must include a valid course ID; log in and enter an enrolled course first.
+
 - **Dual Connection Modes**
   - **Direct API Mode**: Zero Node.js and no local bridge required. Directly connect to official or OpenAI-compatible APIs (e.g., DeepSeek, Qwen, Kimi, GLM, Doubao, OpenAI, etc.).
   - **Local CLI Mode**: Integrates with local command-line tools (Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI) via Chrome Native Messaging, reusing your existing terminal logins and configurations.

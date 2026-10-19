@@ -18,7 +18,8 @@ window.chrome={runtime:{getURL:()=>'/icon.svg',onMessage:{addListener(listener){
   if(window.__modes[message.action]==='sync-context')throw new Error('Extension context invalidated.');
   if(window.__modes[message.action]==='context')return Promise.reject(new Error('Extension context invalidated.'));
   if(window.__modes[message.action]==='pending')return new Promise(resolve=>{window.__pending[message.action]=resolve});
-  return Promise.resolve({ok:true,data:message.action==='openPanel'?{opened:true}:{phase:message.action==='stop'?'stopped':'solving',busy:message.action!=='stop'}});
+  if(window.__courseState)return Promise.resolve({ok:true,data:window.__courseState});
+  return Promise.resolve({ok:true,data:['openPanel','closePanel'].includes(message.action)?{opened:message.action==='openPanel'}:{phase:message.action==='stop'?'stopped':'solving',busy:message.action!=='stop'}});
 }}};
 installPageControls({phase:'idle',busy:false});
 Element.prototype.attachShadow=attachShadow;
@@ -44,7 +45,7 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.waitForFunction(() => window.__nexlyPageControls?.revision === 5);
+  await page.waitForFunction(() => window.__nexlyPageControls?.revision === 7);
   const status = () => page.evaluate(() => window.__testRoot.querySelector('.status').textContent);
   const buttons = () => page.evaluate(() => Object.fromEntries([...window.__testRoot.querySelectorAll('button')].map(button => [button.textContent, button.disabled])));
   async function hoverLauncher() {
@@ -87,11 +88,22 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
     assert.equal(state['暂停'], true);
     assert.equal(state['停止'], false);
     assert.equal(state['打开侧栏'], false);
+    assert.equal(state['关闭侧栏'], false);
     await click('打开侧栏');
     assert.equal((await buttons())['正在打开…'], true);
+    assert.equal((await buttons())['关闭侧栏'], true, 'opening and closing share a request lock');
     await page.evaluate(() => window.__pending.openPanel({ok:true,data:{opened:true}}));
     await page.waitForFunction(() => [...window.__testRoot.querySelectorAll('button')].some(button=>button.textContent==='打开侧栏'&&!button.disabled));
     assert.equal(await status(), '读取题目中');
+    await page.evaluate(() => { window.__modes.closePanel = 'pending'; });
+    await click('关闭侧栏');
+    assert.equal((await buttons())['正在关闭…'], true);
+    assert.equal((await buttons())['打开侧栏'], true);
+    await click('正在关闭…');
+    assert.equal(await page.evaluate(() => window.__commands.filter(message => message.action === 'closePanel').length), 1);
+    await page.evaluate(() => window.__pending.closePanel({ok:true,data:{opened:false}}));
+    await page.waitForFunction(() => [...window.__testRoot.querySelectorAll('button')].some(button=>button.textContent==='关闭侧栏'&&!button.disabled));
+    assert.equal(await status(), '读取题目中', 'closing the sidebar must not stop the reading task');
     assert.equal(await page.evaluate(() => window.__commands.filter(message=>message.action==='start').length), 1, 'opening the sidebar must not start another model request');
     await click('停止');
     await page.waitForFunction(() => window.__testRoot.querySelector('.status').textContent === '任务已停止');
@@ -148,6 +160,28 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
     assert.equal(await status(), '正在启动练习…');
     await page.evaluate(() => window.__pending.start({ok:true,data:{phase:'solving',busy:true}}));
     await page.waitForFunction(() => window.__testRoot.querySelector('.status').textContent === '模型求解中');
+  });
+  await t.test('course mode adds progress, scoped refresh/next commands and responsive controls', async () => {
+    await page.evaluate(() => {
+      window.__modes = {}; window.__commands = [];
+      window.__courseState = {mode:'course',bound:true,phase:'ready',busy:false,operation:'',hasNext:true,questionTitle:'2-1-2 智能经济的新特征',message:'课程已识别，点击开始后才播放。',media:{currentTime:5,duration:20,rate:1.5},watched:1};
+      window.__nexlyPageControls.paint(window.__courseState);
+    });
+    assert.equal(await status(), '课程已识别，点击开始后才播放。');
+    assert.equal(await page.evaluate(() => window.__testRoot.querySelector('.progress span').textContent), '25% · 1.5× · 本次播放结束 1 段');
+    await page.evaluate(() => { window.__testRoot.querySelector('.course-tools button').click(); });
+    assert.deepEqual(await page.evaluate(() => window.__commands), [], 'page-authored synthetic clicks must remain inert');
+    await click('重新识别'); await click('下一章'); await click('开始');
+    assert.deepEqual(await page.evaluate(() => window.__commands.map(message=>[message.source,message.action])), [['page-controls','scan'],['page-controls','nextChapter'],['page-controls','start']]);
+    await page.evaluate(() => { window.__courseState={...window.__courseState,phase:'playing',busy:true,message:'正在播放'};window.__nexlyPageControls.paint(window.__courseState); });
+    assert.equal((await buttons())['开始'], true);
+    assert.equal((await buttons())['暂停'], false);
+    await click('暂停');
+    for (const width of [320,400,1280]) {
+      await page.setViewportSize({width,height:700}); await hoverLauncher();
+      const rect=await page.evaluate(()=>{const r=window.__testRoot.querySelector('.popover').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight}});
+      assert.ok(rect.left>=0&&rect.right<=rect.w&&rect.top>=0&&rect.bottom<=rect.h);
+    }
   });
   assert.deepEqual(errors, []);
 });

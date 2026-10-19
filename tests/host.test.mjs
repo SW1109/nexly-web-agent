@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { COURSE_ORIGINS } from '../extension/lib/course-platforms.js';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { FrameDecoder, encodeFrame } from '../bridge/framing.mjs';
@@ -31,7 +32,7 @@ test('manifest key produces a stable native-host origin', async () => {
   assert.ok(!a.manifest.permissions.includes('debugger'));
   assert.ok(!a.manifest.permissions.includes('cookies'));
   assert.equal(a.manifest.externally_connectable, undefined);
-  assert.equal(a.manifest.host_permissions, undefined);
+  assert.deepEqual(a.manifest.host_permissions, COURSE_ORIGINS);
   assert.equal(a.manifest.incognito, 'not_allowed');
   assert.match(a.manifest.content_security_policy.extension_pages, /object-src 'none'/);
 });

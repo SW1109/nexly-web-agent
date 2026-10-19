@@ -1,7 +1,7 @@
 /** 注入题目所在的隔离世界；保持 closed Shadow DOM，不向网页开放任务入口。 */
 export function installPageControls(initialState, appearance = { opacity: 90 }, initialPosition = { x: 1, y: 1 }, ownerToken = null) {
   const previous = globalThis.__nexlyPageControls;
-  if (previous?.revision === 5 && previous.host?.isConnected) {
+  if (previous?.revision === 7 && previous.host?.isConnected) {
     previous.ownerToken = ownerToken;
     previous.paint(initialState); previous.configure(appearance, initialPosition); return { ok: true };
   }
@@ -29,7 +29,8 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     .body{padding:12px}.question{font-weight:600;margin:0 0 6px;overflow-wrap:anywhere;max-height:54px;overflow:auto}
     .status{margin:0 0 12px;overflow-wrap:anywhere}.error{color:#a2191f}.actions{display:flex;gap:6px}.actions button{flex:1}
     .actions button:first-child{background:#0f62fe;border-color:#0f62fe;color:#fff}.actions button:first-child:hover:not(:disabled){background:#0050e6}
-    .open-panel{width:100%;margin-top:8px;background:transparent;color:#0f62fe}
+    .course-tools{margin-top:8px}.course-tools button:first-child{background:#fff;border-color:#d0d0d0;color:#161616}.course-tools button:first-child:hover:not(:disabled){background:#f4f4f4}.progress{margin:0 0 12px;color:#525252}.progress progress{display:block;width:100%;height:6px;accent-color:#0f62fe;margin-bottom:5px}
+    .panel-tools{display:flex;gap:6px;margin-top:8px}.panel-tools button{flex:1;background:transparent;color:#0f62fe}
     .hint{font-size:11px;color:#525252;margin:10px 0 0}.dragging .launcher,.dragging header{cursor:grabbing}
     @media(pointer:coarse){.actions button{min-height:48px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
   `;
@@ -52,13 +53,23 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   const start = document.createElement('button'), pause = document.createElement('button'), stop = document.createElement('button');
   for (const button of [start, pause, stop]) button.type = 'button';
   start.textContent = '开始'; pause.textContent = '暂停'; stop.textContent = '停止'; actions.append(start, pause, stop);
+  const courseTools = document.createElement('div'); courseTools.className = 'actions course-tools'; courseTools.hidden = true;
+  const refreshCourse = document.createElement('button'), nextChapter = document.createElement('button');
+  refreshCourse.type = nextChapter.type = 'button'; refreshCourse.textContent = '重新识别'; nextChapter.textContent = '下一章';
+  refreshCourse.title = '重新读取此标签页，不自动播放或调用 AI'; nextChapter.title = '打开平台下一章节，不跳过锁定与验证'; courseTools.append(refreshCourse, nextChapter);
+  const courseProgress = document.createElement('div'); courseProgress.className = 'progress'; courseProgress.hidden = true;
+  const progress = document.createElement('progress'); progress.max = 1; progress.setAttribute('aria-label', '当前视频播放进度');
+  const progressLabel = document.createElement('span'); courseProgress.append(progress, progressLabel);
   const openPanel = document.createElement('button'); openPanel.type = 'button'; openPanel.className = 'open-panel'; openPanel.textContent = '打开侧栏';
   openPanel.title = '查看连接状态、设置与任务详情';
+  const closePanel = document.createElement('button'); closePanel.type = 'button'; closePanel.className = 'close-panel'; closePanel.textContent = '关闭侧栏';
+  closePanel.title = '仅关闭当前窗口的 QuizMate 侧栏，不停止课程或答题任务';
+  const panelTools = document.createElement('div'); panelTools.className = 'panel-tools'; panelTools.append(openPanel, closePanel);
   const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = '使用已保存配置 · 最终提交由你操作';
-  body.append(questionLabel, status, actions, openPanel, hint); popover.append(header, body); widget.append(launcher, popover); shadow.append(style, widget); document.documentElement.append(host);
+  body.append(questionLabel, status, courseProgress, actions, courseTools, panelTools, hint); popover.append(header, body); widget.append(launcher, popover); shadow.append(style, widget); document.documentElement.append(host);
   const phases = { awaitingManual: '等待人工提交并换题', idle: '准备就绪', read: '题目已读取', reading: '读取题目中', solving: '模型求解中', delaying: '按配置等待填写', ready: '答案待复核', applying: '写入并核对中', filled: '已填写，未提交', testing: '等待样例执行结果', waiting: '等待平台开放操作', paused: '任务已暂停', stopped: '任务已停止', error: '任务遇到问题', interrupted: '任务已中断' };
-  const pendingLabels = { start: '正在启动练习…', pause: '正在暂停…', resume: '正在继续…', stop: '正在停止…' };
-  let current = initialState, pendingAction = null, panelPending = false, commandEpoch = 0, localError = '', position = { ...initialPosition }, expanded = false;
+  const pendingLabels = { start: '正在启动练习…', pause: '正在暂停…', resume: '正在继续…', stop: '正在停止…', scan: '正在重新识别课程…', nextChapter: '正在打开下一章…' };
+  let current = initialState, pendingAction = null, panelPending = null, commandEpoch = 0, localError = '', position = { ...initialPosition }, expanded = false;
   let drag = null, collapseTimer, syncTimer, suppressClickUntil = 0, keyboard = false, suppressFocus = false, disposed = false, syncInvalidated = false;
   const disconnected = (error) => /extension context invalidated|receiving end does not exist|could not establish connection|message port closed/i.test(error?.message || '');
   const clamp = (value, min, max) => Math.min(Math.max(min, value), Math.max(min, max));
@@ -95,18 +106,30 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
       || ['read', 'solving', 'ready', 'filled'].includes(value.phase) && value.phase !== current?.phase);
     if (recovered) { localError = ''; syncInvalidated = false; }
     current = value;
-    start.disabled = Boolean(pendingAction || value.busy || value.operation);
-    pause.disabled = Boolean(pendingAction || !value.busy || value.operation); pause.textContent = value.paused ? '继续' : '暂停';
-    stop.disabled = pendingAction === 'stop' || !(pendingAction || value.busy || value.operation);
-    openPanel.disabled = panelPending; openPanel.textContent = panelPending ? '正在打开…' : '打开侧栏';
+    const course = value.mode === 'course';
+    title.textContent = course ? 'QuizMate · 网课' : 'QuizMate';
+    hint.textContent = course ? '正常播放 · 验证与提交由你处理 · 外观在侧栏设置' : '使用已保存配置 · 最终提交由你操作';
+    courseTools.hidden = !course;
+    refreshCourse.disabled = Boolean(pendingAction || value.busy || value.operation);
+    nextChapter.disabled = Boolean(pendingAction || value.operation || value.unavailable || !value.hasNext);
+    start.textContent = course && value.paused ? '继续' : '开始';
+    start.disabled = Boolean(pendingAction || value.busy || value.operation || value.unavailable);
+    pause.disabled = Boolean(pendingAction || !value.busy || value.operation); pause.textContent = !course && value.paused ? '继续' : '暂停';
+    stop.disabled = pendingAction === 'stop' || !(pendingAction || value.busy || value.operation || course && value.bound && value.phase !== 'stopped');
+    openPanel.disabled = closePanel.disabled = Boolean(panelPending);
+    openPanel.textContent = panelPending === 'openPanel' ? '正在打开…' : '打开侧栏';
+    closePanel.textContent = panelPending === 'closePanel' ? '正在关闭…' : '关闭侧栏';
     questionLabel.textContent = value.questionTitle || ''; questionLabel.hidden = !value.questionTitle;
     const error = localError || (!pendingAction && value.error);
     status.className = `status${error ? ' error' : ''}`;
-    const phaseText = phases[value.phase] || value.phase;
+    const coursePhases = { idle: '课程待识别', ready: '课程已识别', starting: '正在启动播放', playing: '正在播放', navigating: '正在切换章节', awaitingQuiz: '随堂练习待人工确认', complete: '已到目录末尾', blocked: '等待平台验证' };
+    const phaseText = course && coursePhases[value.phase] || phases[value.phase] || value.phase;
+    courseProgress.hidden = !course || !value.media?.duration;
+    if (!courseProgress.hidden) { progress.value = Math.max(0, Math.min(1, value.media.currentTime / value.media.duration)); progressLabel.textContent = `${Math.round(progress.value * 100)}% · ${value.media.rate}× · 本次播放结束 ${value.watched || 0} 段`; }
     const elapsedText = value.phase === 'solving' && value.elapsedSeconds ? ` · ${value.elapsedSeconds} 秒` : '';
     const typingText = value.typingProgress ? ` · ${value.typingProgress.written}/${value.typingProgress.total}` : '';
     const completedText = value.completed ? ` · 已填写 ${value.completed} 题` : '';
-    status.textContent = error || pendingLabels[pendingAction] || `${phaseText}${elapsedText}${typingText}${completedText}`;
+    status.textContent = error || (pendingAction === 'start' && course ? '正在启动课程…' : pendingLabels[pendingAction]) || (course ? value.message : '') || `${phaseText}${elapsedText}${typingText}${completedText}`;
     widget.dataset.busy = String(Boolean(pendingAction || value.busy || value.operation)); widget.dataset.paused = String(Boolean(value.paused)); widget.dataset.error = String(Boolean(error));
     launcher.setAttribute('aria-label', `QuizMate 页内控制：${phaseText}。悬浮展开，拖动移动`);
     if (expanded) layout();
@@ -114,11 +137,11 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   async function send(event, action) {
     // 合成点击不能启动任务；拖动松手产生的 click 也不执行任务。
     if (!event.isTrusted || disposed || performance.now() < suppressClickUntil) return;
-    const panel = action === 'openPanel';
+    const panel = ['openPanel', 'closePanel'].includes(action);
     if (panel ? panelPending : pendingAction && action !== 'stop') return;
     if (action === 'stop' && pendingAction === 'stop') return;
     const epoch = panel ? commandEpoch : ++commandEpoch;
-    if (panel) panelPending = true;
+    if (panel) panelPending = action;
     else { pendingAction = action; localError = ''; }
     paint(current);
     try {
@@ -129,7 +152,7 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     } catch (error) {
       if (!disposed && epoch === commandEpoch) { localError = readableError(error); setExpanded(true); }
     } finally {
-      if (panel) panelPending = false;
+      if (panel) panelPending = null;
       else if (epoch === commandEpoch) pendingAction = null;
       if (!disposed && (panel || epoch === commandEpoch)) paint(current);
     }
@@ -145,13 +168,16 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
       if (!response?.ok) throw new Error(response?.error || '位置未能保存，请重新启用页内控制');
     } catch (error) { if (!disposed) { localError = readableError(error); paint(current); setExpanded(true); } }
   }
+  refreshCourse.addEventListener('click', (event) => { void send(event, 'scan'); });
+  nextChapter.addEventListener('click', (event) => { void send(event, 'nextChapter'); });
   start.addEventListener('click', (event) => { void send(event, 'start'); });
   pause.addEventListener('click', (event) => { void send(event, current.paused ? 'resume' : 'pause'); });
   stop.addEventListener('click', (event) => { void send(event, 'stop'); });
   openPanel.addEventListener('click', (event) => { void send(event, 'openPanel'); });
+  closePanel.addEventListener('click', (event) => { void send(event, 'closePanel'); });
   launcher.addEventListener('click', (event) => {
     if (!event.isTrusted || performance.now() < suppressClickUntil) return;
-    if (event.detail === 0) { keyboard = true; setExpanded(true); [start, pause, stop, openPanel].find((button) => !button.disabled)?.focus(); }
+    if (event.detail === 0) { keyboard = true; setExpanded(true); [start, pause, stop, refreshCourse, nextChapter, openPanel, closePanel].find((button) => !button.disabled)?.focus(); }
     else setExpanded(!expanded);
   });
   close.addEventListener('click', (event) => { if (event.isTrusted) { keyboard = false; setExpanded(false); } });
@@ -232,7 +258,7 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     disposed = true; commandEpoch++; observer.disconnect(); clearTimeout(syncTimer); clearTimeout(collapseTimer);
     window.removeEventListener('resize', layout); document.removeEventListener('change', onChange, true); chrome.runtime.onMessage.removeListener(listener); host.remove();
   };
-  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 5, ownerToken };
+  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 7, ownerToken };
   configure(appearance, initialPosition); paint(initialState);
   return { ok: true };
 }

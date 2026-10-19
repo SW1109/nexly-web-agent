@@ -73,7 +73,7 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
   await background.evaluate(async () => { await chrome.storage.local.set({ connectionMode: 'api', count: 1, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } }); });
   const page = await context.newPage();
   t.after(async () => { if (!page.isClosed()) console.log('API UI status:', await page.locator('#api-status').textContent().catch(() => ''), 'page errors:', errors); }); page.on('pageerror', (error) => errors.push(error.message)); page.setDefaultTimeout(10000);
-  const panelUrl = `chrome-extension://${manifest.key ? 'hbgbhhljnmlognjblnchioheiclcopel' : ''}/panel.html`;
+  const panelUrl = `chrome-extension://${manifest.key ? 'hbgbhhljnmlognjblnchioheiclcopel' : ''}/panel.html?view=practice`;
   await page.goto(panelUrl);
   await page.locator('#data-consent').waitFor({ state: 'visible' });
   // 宽屏不能只检查“无溢出”：连接条即使未溢出，也可能偏在视口最左边。
@@ -83,7 +83,7 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
       await page.setViewportSize({ width, height: 800 });
       const layout = await page.evaluate(() => {
         const width = document.documentElement.clientWidth;
-        const selectors = ['.header', '.connection-strip', 'body > .resource-links', 'main'];
+        const selectors = ['.header', '.connection-strip', '.navigation-shell', 'main'];
         return { width, scroll: document.documentElement.scrollWidth, centers: selectors.map(selector => {
           const rect = document.querySelector(selector).getBoundingClientRect();
           return { selector, delta: Math.abs(rect.left + rect.width / 2 - width / 2) };
@@ -99,9 +99,11 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
   assert.equal(await page.locator('#auto').isDisabled(), true);
   await page.locator('#data-consent-check').check(); await page.locator('#accept-data-use').click();
   await page.locator('#data-consent').waitFor({ state: 'hidden' });
-  await page.locator('#open-settings').click(); await page.locator('#save-settings').click();
+  await page.locator('#open-settings').click(); await page.locator('#setting-controls').click(); await page.locator('#save-settings').click();
   await page.waitForFunction(() => document.getElementById('api-url').getAttribute('aria-invalid') === 'true');
   assert.match(await page.locator('#api-url-error').textContent(), /调用地址/);
+  assert.equal(await page.locator('#settings-connection').isVisible(), true);
+  assert.equal(await page.locator('#api-url').evaluate(input => input === document.activeElement), true);
   const beforePresets = received.length;
   assert.equal(await page.locator('.api-promotion a').getAttribute('href'), 'https://nexly.guangnian.xin/');
   assert.match(await page.locator('.api-promotion').textContent(), /推广/);

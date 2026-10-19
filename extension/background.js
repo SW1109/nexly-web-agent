@@ -9,12 +9,20 @@ import { installPageControls, removePageControls } from './lib/page-controls.js'
 import { navigationAction } from './lib/navigation.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, validateAppearance, validatePosition } from './lib/appearance.js';
 import { activePracticeTab } from './lib/tab-access.js';
+import { createCourseRuntime } from './lib/course-runtime.js';
+import { coursePlatform } from './lib/course-platforms.js';
+import { coursePageAction } from './lib/course-page.js';
 
 const emptyState = () => ({ phase: 'idle', busy: false, operation: null, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', connectionMode: 'local', model: '', elapsedSeconds: 0 });
-let state = emptyState(), controller = null, operationEpoch = 0;
+let state = emptyState(), controller = null, operationEpoch = 0, controlsGeneration = 0;
 const probes = new Map();
 const reportedCommandErrors = new WeakSet();
 let hydrationComplete = false;
+const courses = createCourseRuntime({
+  practiceBusy: () => state.busy || probes.size > 0,
+  solveQuiz: ({ tabId, fill }) => handle({ action: 'start', fill, count: 1 }, null, tabId),
+  onChange: () => publishCourseControls()
+});
 void protectApiStorage().then(() => apiSettings()).catch(() => {});
 const hydrated = chrome.storage.session.get('taskState').then(({ taskState }) => {
   if (taskState) state = { ...emptyState(), ...taskState, busy: false, operation: null, paused: false, pauseReason: null, phase: taskState.busy ? 'interrupted' : taskState.phase, error: taskState.busy ? '浏览器后台曾重启，任务已停止。请重新读取或求解。' : taskState.error };
@@ -29,7 +37,18 @@ async function publish(patch = {}, message = '') {
     void chrome.tabs.sendMessage(target.tabId, { type: 'page-state', state: publicPageState(target) }, target.documentId ? { documentId: target.documentId } : { frameId: target.frameId }).catch(() => {});
   }
 }
+function publishCourseControls() {
+  for (const target of Object.values(state.controls)) if (target.mode === 'course') {
+    void chrome.tabs.sendMessage(target.tabId, { type: 'page-state', state: publicPageState(target) }, target.documentId ? { documentId: target.documentId } : { frameId: target.frameId }).catch(() => {});
+  }
+}
 function publicPageState(target) {
+  if (target.mode === 'course') {
+    const course = courses.state, own = course.tabId === target.tabId, snapshot = own ? course.snapshot : null;
+    const current = snapshot?.chapters.filter((item) => item.current) || [];
+    const unavailable = state.busy || probes.size > 0 || !own && courses.busy;
+    return { mode: 'course', bound: own, phase: own ? course.phase : 'idle', busy: own && course.running, operation: own ? course.operation : null, paused: own && !course.running && !['idle', 'ready', 'complete', 'stopped'].includes(course.phase), unavailable, error: own ? course.error : '', questionTitle: current.length === 1 ? current[0].title : snapshot?.title || '', media: snapshot?.media || null, watched: own ? course.watched : 0, hasNext: Boolean(snapshot?.nextChapter || current.length === 1 && snapshot.chapters[current[0].index + 1]), message: unavailable ? '其他任务正在运行，请先暂停原任务；可打开侧栏查看。' : own ? course.message : '点击开始识别并播放此课程；也可先重新识别，不会自动调用 AI。' };
+  }
   if (state.target?.tabId !== target.tabId || state.target?.frameId !== target.frameId) return { phase: 'idle', busy: false, operation: null, paused: false, completed: 0, error: '', typingProgress: null, elapsedSeconds: 0 };
   const { phase, busy, operation, paused, completed, error, typingProgress, runInBackground, connectionMode, elapsedSeconds } = state;
   return { phase, busy, operation, paused, completed, error, typingProgress, runInBackground, connectionMode, elapsedSeconds: elapsedSeconds || 0, questionTitle: state.question?.title || '' };
@@ -47,41 +66,47 @@ async function preferences(overrides = {}) {
   const pacing = validatePacing(overrides.pacing === undefined ? saved.pacing : overrides.pacing);
   return { provider, count, run, pacing, runInBackground, connectionMode: mode };
 }
-async function attachControls(target, task = null, epoch = operationEpoch) {
+async function attachControls(target, task = null, epoch = operationEpoch, generation = controlsGeneration) {
+  const assertControls = () => { assertOperationEpoch(epoch); if (generation !== controlsGeneration) throw staleOperation(); };
+  // 播放器/题块可在子 frame，但同一个课程标签只在主文档放一个控制球。
+  const tab = await chrome.tabs.get(target.tabId).catch(() => null);
+  if (coursePlatform(tab?.url) && target.mode !== 'course') target = { tabId: target.tabId, frameId: 0, mode: 'course' };
+  const previous = state.controls[target.tabId];
   const saved = await chrome.storage.local.get(['controlsAppearance', 'controlsPosition']);
-  assertOperationEpoch(epoch);
-  if (task) assertCurrent(task);
+  assertControls(); if (task) assertCurrent(task);
   let appearance = DEFAULT_APPEARANCE, position = DEFAULT_POSITION;
-  // 外观配置损坏不能阻断读取题目；位置独立存储，保存透明度不会覆盖刚拖动的位置。
+  // 外观配置损坏不阻断读取；位置独立存储，保存透明度不覆盖刚拖动的位置。
   try { appearance = validateAppearance(saved.controlsAppearance); } catch {}
   try { position = validatePosition(saved.controlsPosition); } catch {}
   const ownerToken = crypto.randomUUID();
   let result;
   try {
     [result] = await chrome.scripting.executeScript({ target: { tabId: target.tabId, ...(target.documentId ? { documentIds: [target.documentId] } : { frameIds: [target.frameId] }) }, world: 'ISOLATED', func: installPageControls, args: [publicPageState(target), appearance, position, ownerToken] });
-    assertOperationEpoch(epoch);
-    if (task) assertCurrent(task);
+    assertControls(); if (task) assertCurrent(task);
+    if (!result?.result?.ok) throw new Error('页内控制面板未能安装');
+    const binding = { ...target, documentId: result.documentId || target.documentId || null };
+    if (previous && (previous.frameId !== binding.frameId || previous.documentId && previous.documentId !== binding.documentId)) {
+      await chrome.scripting.executeScript({ target: { tabId: previous.tabId, ...(previous.documentId ? { documentIds: [previous.documentId] } : { frameIds: [previous.frameId] }) }, world: 'ISOLATED', func: removePageControls }).catch(() => {});
+    }
+    assertControls(); if (task) assertCurrent(task);
+    await publish({ controls: { ...state.controls, [target.tabId]: binding } });
   } catch (error) {
-    // 注入可能已执行、只是回包较晚；只移除本次创建/接管的实例，不能误删后来重新注入的组件。
+    // 注入可能已执行、回包才晚到；整个安装/替换事务都要收尾，且不能删除后续任务接管的实例。
     const documentId = result?.documentId || target.documentId;
     const registered = state.controls[target.tabId];
-    if (registered && registered.frameId === target.frameId && (!documentId || registered.documentId === documentId)) {
-      // 复用的是原先已登记的组件时保留它，并恢复当前的停止/新任务状态。
+    if (generation === controlsGeneration && registered && registered.frameId === target.frameId && (!documentId || registered.documentId === documentId)) {
       await chrome.tabs.sendMessage(target.tabId, { type: 'page-state', state: publicPageState(registered) }, documentId ? { documentId } : { frameId: target.frameId }).catch(() => {});
     } else {
       await chrome.scripting.executeScript({ target: { tabId: target.tabId, ...(documentId ? { documentIds: [documentId] } : { frameIds: [target.frameId] }) }, world: 'ISOLATED', func: removePageControls, args: [ownerToken] }).catch(() => {});
     }
     throw error;
   }
-  if (!result?.result?.ok) throw new Error('页内控制面板未能安装');
-  const binding = { ...target, documentId: result.documentId || target.documentId || null };
-  await publish({ controls: { ...state.controls, [target.tabId]: binding } });
 }
 /** 仅在已授权的练习站点自动显示入口，不更改网站的焦点与计时规则。 */
 const autoAttachPending = new Set();
 async function autoAttach(tabId) {
   if (controller || autoAttachPending.has(tabId)) return false;
-  const epoch = operationEpoch;
+  const epoch = operationEpoch, generation = controlsGeneration;
   autoAttachPending.add(tabId);
   try {
     const { autoControls } = await chrome.storage.local.get('autoControls');
@@ -92,6 +117,16 @@ async function autoAttach(tabId) {
     let permitted = true;
     try { permitted = await chrome.permissions.contains({ origins: [`${new URL(tab.url).origin}/*`] }); } catch {}
     if (!permitted) return false;
+    const definition = coursePlatform(tab.url);
+    if (definition) {
+      const [entry] = await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] }, world: 'ISOLATED', func: coursePageAction, args: ['read', { platform: definition }] });
+      assertOperationEpoch(epoch);
+      if (!entry?.result?.ok || /完成登录/.test(entry.result.gate || '')) return false;
+      const existing = state.controls[tabId];
+      if (existing?.mode === 'course' && existing.documentId === entry.documentId) return true;
+      await attachControls({ tabId, frameId: 0, documentId: entry.documentId || null, mode: 'course' }, null, epoch, generation);
+      return true;
+    }
     const snapshot = await scan(tabId);
     assertOperationEpoch(epoch);
     if (controller) return false;
@@ -100,7 +135,7 @@ async function autoAttach(tabId) {
     if (existing && existing.frameId === snapshot.target.frameId && existing.documentId === snapshot.target.documentId) return true;
     await publish({ ...snapshot, answer: null, typingProgress: null, error: '', phase: 'read' });
     assertOperationEpoch(epoch);
-    await attachControls(snapshot.target, null, epoch);
+    await attachControls(snapshot.target, null, epoch, generation);
     assertOperationEpoch(epoch);
     await publish({}, '已按设置自动启用页内组件。');
     return true;
@@ -575,11 +610,23 @@ async function solveSequence(task, options) {
     if (controller === task && !task.stopped) await publish({ busy: false, operation: null, paused: false, pauseReason: null, phase: 'error', error: error.message }, error.message);
   } finally { task.solver?.release(); if (controller === task) controller = null; }
 }
-async function handle(message, pageTarget = null) {
+async function handle(message, pageTarget = null, courseTabId = null) {
   // 必须在任何 await 之前调用，保留页内按钮点击传来的浏览器用户手势。
   if (message.action === 'openPanel') {
     if (!pageTarget) throw new Error('请从已绑定的页内组件打开侧栏');
     await chrome.sidePanel.open({ tabId: pageTarget.tabId });
+    const view = pageTarget.mode === 'course' && !(state.busy && state.target?.tabId === pageTarget.tabId) ? 'course' : 'practice';
+    await chrome.storage.session.set({ panelRequestedView: { view, at: Date.now() } });
+    void chrome.runtime.sendMessage({ type: 'panel-navigate', view }).catch(() => {});
+    return state;
+  }
+  if (message.action === 'closePanel') {
+    if (!pageTarget) throw new Error('请从已绑定的页内组件关闭侧栏');
+    if (typeof chrome.sidePanel.close !== 'function') throw new Error('当前浏览器不支持从页内关闭侧栏，请使用侧栏右上角关闭按钮，或升级浏览器');
+    const tab = await chrome.tabs.get(pageTarget.tabId);
+    if (!Number.isInteger(tab?.windowId) || tab.windowId < 0) throw new Error('课程或练习所在窗口已关闭，请刷新页面后重试');
+    // 默认面板属于窗口；不能用当前活动窗口，也不能只关闭标签专属面板，否则多窗口下会误关或关不掉。
+    await chrome.sidePanel.close({ windowId: tab.windowId });
     return state;
   }
   await hydrated;
@@ -643,6 +690,7 @@ async function handle(message, pageTarget = null) {
     if (task) { task.stopped = true; controller = null; task.request?.cancel(); task.solver?.release(); }
     await publish({ busy: false, operation: null, paused: false, pauseReason: null, phase: 'stopped' }, '任务已停止，保留已填写内容。'); return state;
   }
+  if (courseTabId == null && courses.busy) throw new Error('网课正在播放或切换章节，请先在网课区暂停课程');
   if (state.busy || probes.size) throw new Error('已有任务或 API 测试运行，请先停止或等待完成');
   if (message.action === 'read' || message.action === 'enableControls') {
     // 读题和注入同样占用任务入口，避免另一个侧栏开始任务后被旧回包覆盖。
@@ -708,7 +756,7 @@ async function handle(message, pageTarget = null) {
     operationEpoch++;
     await publish({ busy: true, operation: null, paused: false, pauseReason: null, autoFill, error: '', completed: 0, typingProgress: null, phase: 'reading', answer: null });
     try {
-      const prefs = await preferences(message), tab = await activeTab(); assertCurrent(task);
+      const prefs = await preferences(message), tab = courseTabId == null ? await activeTab() : await chrome.tabs.get(courseTabId); assertCurrent(task);
       if (pageTarget && pageTarget.tabId !== tab.id) throw new Error('请在当前练习页内开始任务');
       Object.assign(task, { tabId: tab.id, provider: prefs.provider, pacing: prefs.pacing, runInBackground: prefs.runInBackground, connectionMode: prefs.connectionMode, preferences: prefs });
       task.solver = await prepareSolver(prefs);
@@ -736,7 +784,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (!message || typeof message !== 'object' || message.type !== 'command') return false;
   // 侧栏和独立打开的扩展面板同属可信页面；严格匹配面板 URL，不能只凭 extension id 放行网页。
   const panel = sender.url?.split(/[?#]/)[0] === chrome.runtime.getURL('panel.html');
-  const page = sender.tab && message.source === 'page-controls' && ['state', 'start', 'pause', 'resume', 'stop', 'pageChanged', 'moveControls', 'openPanel'].includes(message.action);
+  const page = sender.tab && message.source === 'page-controls' && ['state', 'start', 'pause', 'resume', 'stop', 'pageChanged', 'moveControls', 'openPanel', 'closePanel', 'scan', 'nextChapter'].includes(message.action);
   if (sender.id !== chrome.runtime.id || (!panel && !page)) return false;
   if (page && message.action === 'openPanel') {
     // Chrome 要求 open() 直接响应用户操作；此分支同步验证绑定，不能先查询存储或标签。
@@ -752,8 +800,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     let target = null;
     if (page) {
       target = boundPageTarget(sender);
-      if (['pause', 'resume', 'stop'].includes(message.action) && controller?.tabId !== sender.tab.id) throw new Error('当前任务不属于此练习页');
+      if (target.mode !== 'course' && ['pause', 'resume', 'stop'].includes(message.action) && controller?.tabId !== sender.tab.id) throw new Error('当前任务不属于此练习页');
     }
+    if (page && target.mode === 'course' && !['moveControls', 'openPanel', 'closePanel'].includes(message.action)) {
+      if (message.action === 'pageChanged') await courses.navigate(target.tabId);
+      else if (message.action !== 'state') {
+        if (message.action === 'start' && courses.state.tabId !== target.tabId) await courses.handle({ action: 'scan' }, target.tabId);
+        await courses.handle({ action: message.action }, target.tabId);
+      }
+      return publicPageState(target);
+    }
+    if (page && ['scan', 'nextChapter'].includes(message.action)) throw new Error('该操作仅适用于课程页内控制');
     const data = await handle(page ? { action: message.action, ...(message.action === 'moveControls' ? { position: message.position } : {}) } : message, target);
     return page ? publicPageState(target) : data;
   })().then((data) => respond({ ok: true, data })).catch(async (error) => { if (panel && error.code !== 'STALE_OPERATION' && !reportedCommandErrors.has(error) && !['apiSettings', 'saveApiSettings', 'clearApiKey', 'unlockApiKey', 'lockApiKey', 'apiModels', 'apiTest', 'apiCancel', 'health'].includes(message.action)) await publish({ error: error.message }); respond({ ok: false, error: error.message }); });
@@ -762,6 +819,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.autoControls) {
+    controlsGeneration++;
     void (async () => { await hydrated; await applyAutoControls(changes.autoControls.newValue !== false); })().catch(() => {});
   }
   if (!changes.controlsAppearance && !changes.controlsPosition) return;
@@ -815,3 +873,37 @@ chrome.webNavigation.onCompleted.addListener(({ tabId }) => {
     }
   })();
 });
+
+// 侧栏走课程命令入口；页内控制走上方已绑定文档校验，网页自定义事件仍不能发起任务。
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (sender.id !== chrome.runtime.id || !message || typeof message !== 'object') return false;
+  const panel = sender.url?.split(/[?#]/)[0] === chrome.runtime.getURL('panel.html');
+  if (message.type === 'course-command' && panel) {
+    void courses.handle(message).then(() => respond({ ok: true, data: courses.state })).catch((error) => respond({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message.type === 'course-event' && sender.tab) {
+    void courses.event(message, sender).then((accepted) => respond({ ok: true, accepted })).catch(() => respond({ ok: false, accepted: false }));
+    return true;
+  }
+  return false;
+});
+const courseNavigations = new Map();
+function updateCoursePage({ tabId }) {
+  clearTimeout(courseNavigations.get(tabId));
+  courseNavigations.set(tabId, setTimeout(() => {
+    courseNavigations.delete(tabId);
+    void courses.navigate(tabId).then(() => courses.autoRecognize(tabId)).then(() => autoAttach(tabId)).catch(() => {});
+  }, 800));
+}
+chrome.webNavigation.onCompleted.addListener(updateCoursePage);
+chrome.webNavigation.onHistoryStateUpdated?.addListener(updateCoursePage);
+chrome.tabs.onActivated.addListener(({ tabId }) => { void courses.autoRecognize(tabId).then(() => autoAttach(tabId)).catch(() => {}); });
+chrome.tabs.onRemoved?.addListener((tabId) => { clearTimeout(courseNavigations.get(tabId)); courseNavigations.delete(tabId); void courses.closed(tabId).catch(() => {}); });
+chrome.permissions?.onRemoved?.addListener(() => { void courses.permissionRemoved().catch(() => {}); });
+
+// 重载扩展时已有的课程页也要有入口；只补识别和组件，不恢复播放或 AI 任务。
+void Promise.all([hydrated, courses.ready]).then(async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id != null) { await courses.autoRecognize(tab.id); await autoAttach(tab.id); }
+}).catch(() => {});

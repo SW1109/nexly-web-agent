@@ -40,10 +40,14 @@ export async function pageAction(action, payload = {}) {
       return (result >>> 0).toString(16);
     };
     const marker = /(?:编程|单选|多选|判断|填空|简答)题|第\s*\d+\s*\/\s*\d+\s*题/;
+    const courseHost = new URL(location.href).hostname;
+    const selectedCourseRoots = (courseHost === 'moodle.syxy.ouchn.cn' || ['chaoxing.com', 'zhihuishu.com', 'icourse163.org'].some((host) => courseHost === host || courseHost.endsWith(`.${host}`))) ? all('[data-quizmate-course-question="selected"]') : [];
+    if (selectedCourseRoots.length > 1) return readResult({ ok: false, error: '网课区有多个选中题块，请重新选择本题' });
+    const courseQuestion = selectedCourseRoots.length === 1;
     const candidates = all('[data-nexly-question],.question-container,.exam-question,.question-box,.problem-container,.subject-container').filter((el) => marker.test(text(el)) || el.hasAttribute('data-nexly-question'));
     const leafCandidates = candidates.filter((candidate) => !candidates.some((other) => candidate !== other && candidate.contains(other)));
-    if (leafCandidates.length > 1) return readResult({ ok: false, error: '页面同时显示多个活动题目区域，请选中需要处理的题目' });
-    const root = leafCandidates[0] || document.body;
+    if (!courseQuestion && leafCandidates.length > 1) return readResult({ ok: false, error: '页面同时显示多个活动题目区域，请选中需要处理的题目' });
+    const root = selectedCourseRoots[0] || leafCandidates[0] || document.body;
     if (!root) return readResult({ ok: false, error: '页面尚未加载完成' });
 
     const editorSelector = '.monaco-editor:not(.original-in-monaco-diff-editor),.ace_editor,.CodeMirror,textarea[data-code-editor],textarea.code-editor,textarea[data-language]';
@@ -64,7 +68,7 @@ export async function pageAction(action, payload = {}) {
       return value;
     }
     const stem = questionText();
-    if (!marker.test(stem) && !root.hasAttribute('data-nexly-question')) return readResult({ ok: false, error: '此 frame 没有识别到练习题，不会操作普通表单' });
+    if (!marker.test(stem) && !root.hasAttribute('data-nexly-question') && !courseQuestion) return readResult({ ok: false, error: '此 frame 没有识别到练习题，不会操作普通表单' });
     if (!stem || stem.length > 48000) return readResult({ ok: false, error: '题干过长或未能定位题目区域，请缩小页面内容或反馈页面结构' });
 
     // 原生 radio/checkbox 常被站点用 display:none / visibility:hidden 隐藏、只显示自绘样式。
@@ -72,11 +76,13 @@ export async function pageAction(action, payload = {}) {
     const optionWrapper = 'label,.ant-radio-wrapper,.ant-checkbox-wrapper,.el-radio,.el-checkbox';
     const usableOption = (node) => visible(node) || visible(node.closest(optionWrapper)) || visible(node.parentElement);
     const isOptionNode = (node) => !node.closest('[role="radio"],[role="checkbox"]') || node.matches('[role="radio"],[role="checkbox"]');
-    const rawOptionNodes = [...root.querySelectorAll('input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]')].filter(isOptionNode);
+    let optionSelector = 'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]';
+    if (courseQuestion && !root.querySelector(optionSelector)) optionSelector = '.Zy_ulTop > li,.answerBg .answer_p,.choices > li,.optionUl label,.nodeLab,.option-result';
+    const rawOptionNodes = [...root.querySelectorAll(optionSelector)].filter(isOptionNode);
     const optionNodes = rawOptionNodes.filter(usableOption);
     const optionLabel = (el) => {
       const label = el.closest(optionWrapper);
-      return text(label) || (el.id ? text(document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) : '') || el.getAttribute('aria-label') || text(el.parentElement);
+      return text(label) || (el.id ? text(document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) : '') || el.getAttribute('aria-label') || (courseQuestion && !el.matches('input') ? text(el) : text(el.parentElement));
     };
     const options = optionNodes.map((el, i) => { const value = optionLabel(el); return { id: `option-${i}`, label: value.match(/^([A-Z])[.、．\s]/)?.[1] || String.fromCharCode(65 + i), text: value }; });
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -94,7 +100,6 @@ export async function pageAction(action, payload = {}) {
       if ([node, row, row.parentElement].some(classSelected)) return true;
       return [...row.querySelectorAll('i,span,em,svg,b')].some(classSelected);
     };
-    const optionSelector = 'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]';
     const liveRoot = () => (root.isConnected ? root : document);
     // 站点可能在点击后重建选项节点，回读必须重新查询当前 DOM，不能只用旧引用。
     const liveOptionNodes = () => [...liveRoot().querySelectorAll(optionSelector)].filter(isOptionNode).filter(usableOption);
@@ -132,7 +137,7 @@ export async function pageAction(action, payload = {}) {
       }
       // 自绘控件可能完全不暴露选中状态：单选框/判断题点击即生效，读不到任何选中态时按点击结果继续并提示人工核对。
       const blind = liveOptionNodes().every((entry) => optionSelected(entry) === false);
-      return { ok: blind && type !== 'multiple', verified: false };
+      return { ok: blind && type !== 'multiple' && !courseQuestion, verified: false };
     };
     const inputNodes = all('textarea,input:not([type]),input[type="text"],input[type="number"],[contenteditable="true"]', root).filter((el) => !el.closest('.monaco-editor,.ace_editor,.CodeMirror') && !el.matches('[role="combobox"]') && !el.closest('.ant-select,.el-select,.test-cases,[data-nexly-tests]'));
     // 题型以页面显式标识和实际选项结构为准。页面上任何可见的代码编辑器（例如常驻 IDE 面板、

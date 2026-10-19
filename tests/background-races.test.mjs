@@ -20,7 +20,7 @@ async function until(predicate) {
 }
 
 test('read operations reserve the task entry and stopped asynchronous results cannot replace a later task', async (t) => {
-  const commands = event(), messages = event(), disconnected = event(), storageChanged = event(), navigated = event(), outbound = [], panelOpens = [], hydrationGate = deferred(), installedWidgets = new Map(), removedWidgets = [];
+  const commands = event(), messages = event(), disconnected = event(), storageChanged = event(), navigated = event(), outbound = [], panelOpens = [], panelCloses = [], hydrationGate = deferred(), installedWidgets = new Map(), removedWidgets = [];
   let saved, question = structuredClone(single), readGate = null, controlsGate = null, consentGate = null, activeTabId = 1, documentId = 'doc';
   const local = { dataConsentVersion: 1, provider: 'codex', count: 1, runInBackground: true, pacing: { answerDelayMs: 0, actionIntervalMs: 0, typingIntervalMs: 0, typewriter: false } };
   const port = {
@@ -50,11 +50,11 @@ test('read operations reserve the task entry and stopped asynchronous results ca
       session: { async setAccessLevel() {}, async get(key) { if (key === 'taskState') await hydrationGate.promise; return {}; }, async set({ taskState }) { if (taskState) saved = structuredClone(taskState); } }
     },
     runtime: { id: 'race', getURL: (path) => `chrome-extension://race/${path}`, onMessage: commands, async sendMessage() {}, connectNative: () => port },
-    tabs: { async query() { return [{ id: activeTabId, url: single.pageUrl }]; }, async get(id) { return { id, active: true, windowId: 1, url: single.pageUrl }; }, onActivated: event(), async sendMessage() {} },
+    tabs: { async query() { return [{ id: activeTabId, url: single.pageUrl }]; }, async get(id) { return { id, active: id === activeTabId, windowId: id === 1 ? 1 : 2, url: single.pageUrl }; }, onActivated: event(), async sendMessage() {} },
     windows: { async get() { return { focused: true }; }, onFocusChanged: event() },
     commands: { onCommand: event() },
     webNavigation: { onCompleted: navigated, async getAllFrames() { return []; } },
-    sidePanel: { async setPanelBehavior() {}, async open(options) { panelOpens.push(options); } },
+    sidePanel: { async setPanelBehavior() {}, async open(options) { panelOpens.push(options); }, async close(options) { panelCloses.push(options); } },
     permissions: { async contains() { return true; } },
     scripting: {
       async executeScript({ world, args, target, func }) {
@@ -175,6 +175,43 @@ test('read operations reserve the task entry and stopped asynchronous results ca
     assert.equal((await command('openPanel')).ok, false, 'panel commands cannot impersonate a page-control click');
     assert.equal(panelOpens.length, before + 1);
     await command('read');
+  });
+
+  await t.test('closing the sidebar is scoped to the bound window and leaves an in-flight task alone', async () => {
+    const gate = deferred(); readGate = gate;
+    const pending = command('read');
+    await until(() => gate.entered);
+    const before = panelCloses.length;
+    activeTabId = 2;
+    try {
+      assert.equal((await pageCommand('closePanel')).ok, true);
+      assert.deepEqual(panelCloses.at(-1), { windowId: 1 });
+      for (const sender of [{ frameId: 7 }, { documentId: 'stale-document' }, { tab: { id: 2 } }]) {
+        const response = await pageCommand('closePanel', sender);
+        assert.equal(response.ok, false); assert.match(response.error, /未绑定/);
+      }
+      let forgedReply = false;
+      commands.emit({ type: 'command', source: 'page-controls', action: 'closePanel' }, { id: 'another-extension', tab: { id: 1 }, frameId: 0, documentId: 'doc' }, () => { forgedReply = true; });
+      assert.equal(forgedReply, false);
+      assert.equal(panelCloses.length, before + 1);
+      assert.equal(saved.busy, true); assert.equal(saved.operation, 'read'); assert.equal(saved.error, '');
+    } finally { activeTabId = 1; gate.resolve(); await pending; }
+    assert.equal((await command('closePanel')).ok, false, 'only the bound page can request sidebar closure');
+    await command('read');
+  });
+
+  await t.test('unsupported or failed sidebar closure reports an error without corrupting task state', async () => {
+    const originalClose = chrome.sidePanel.close;
+    const before = structuredClone(saved);
+    try {
+      delete chrome.sidePanel.close;
+      let response = await pageCommand('closePanel');
+      assert.equal(response.ok, false); assert.match(response.error, /不支持从页内关闭侧栏/);
+      chrome.sidePanel.close = async () => { throw new Error('模拟关闭失败'); };
+      response = await pageCommand('closePanel');
+      assert.equal(response.ok, false); assert.match(response.error, /模拟关闭失败/);
+      assert.deepEqual(saved, before);
+    } finally { chrome.sidePanel.close = originalClose; }
   });
 
   for (const reject of [false, true]) {

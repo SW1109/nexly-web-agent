@@ -4,6 +4,8 @@ import { DEFAULT_APPEARANCE, DEFAULT_POSITION, OPACITY, validateAppearance } fro
 import { createApiForm } from './lib/api-form.js';
 import { ensurePracticeAccess } from './lib/tab-access.js';
 import { createTaskLog } from './lib/panel-log.js';
+import { createCoursePanel } from './lib/course-panel.js';
+import { createPanelLayout } from './lib/panel-layout.js';
 const $ = (id) => document.getElementById(id);
 const renderLog = createTaskLog({ list: $('log'), count: $('log-count'), jump: $('log-latest') });
 for (const link of document.querySelectorAll('[data-project-link]')) link.href = PROJECT[link.dataset.projectLink];
@@ -16,24 +18,20 @@ function showDataUse(accepted) {
 const names = { codex: 'Codex CLI', claude: 'Claude Code', gemini: 'Gemini CLI', qwen: 'Qwen Code', kimi: 'Kimi CLI' };
 const types = { code: '编程题', single: '单选题', multiple: '多选题', judge: '判断题', blank: '填空题', text: '简答题' };
 const phases = { awaitingManual: '等待人工提交并换题', idle: '准备就绪', read: '题目已读取', reading: '读取题目中', solving: '模型求解中', delaying: '按配置等待填写', ready: '答案待复核', applying: '写入并核对中', filled: '已填写，未提交', testing: '等待样例执行结果', waiting: '等待平台开放操作', paused: '任务已暂停', stopped: '任务已停止', error: '任务遇到问题', interrupted: '任务已中断' };
+let coursePanel = null, layout = null;
 let currentState = null, connection = null, localBusy = false, nativeBridgeFailed = false;
 let localOperation = null, apiBusy = false, healthChecking = false;
 const operationLabels = { read: '正在读取题目…', enableControls: '正在启用页内组件…', start: '正在启动任务…', fill: '正在填写答案…', run: '正在执行样例…', pause: '正在暂停…', resume: '正在继续…', stop: '正在停止任务…' };
 const apiForm = createApiForm({
   command,
+  onInvalid: (input) => layout?.revealSetting(input),
   onBusy(value) { apiBusy = value; if (currentState) render(currentState); },
   onChange() { settingsDirty = true; if ($('connection-mode').value === 'api') { connection = null; $('connection-status').textContent = 'API 配置未保存'; $('connection-status').className = 'status bad'; } updateSummary(); if (currentState) render(currentState); },
   onSaved(health) { connection = health.ready ? health : null; $('connection-status').textContent = health.ready ? 'API 配置已就绪' : health.locked ? 'API 密钥已锁定' : 'API 密钥已清除'; $('connection-status').className = health.ready ? 'status ok' : 'status bad'; if (currentState) render(currentState); }
 });
-let settingsSaving = false, settingsDirty = false, taskScroll = 0;
+let settingsSaving = false, settingsDirty = false;
 const pacingInputs = [...document.querySelectorAll('[data-pacing]')];
-function showSettings(open, focus = true) {
-  if (open && $('settings-view').hidden) taskScroll = window.scrollY;
-  $('settings-view').hidden = !open; $('task-view').hidden = open;
-  $('open-settings').setAttribute('aria-expanded', String(open));
-  if (focus) (open ? $('settings-title') : $('open-settings')).focus({ preventScroll: true });
-  window.scrollTo(0, open ? 0 : taskScroll);
-}
+function showSettings(open, focus = true, category) { layout.showSettings(open, focus, category); }
 function settingsStatus(message, error = false) {
   $('settings-status').textContent = message; $('settings-status').dataset.error = String(error);
 }
@@ -51,7 +49,7 @@ function validateInput(input, message) {
   input.setCustomValidity('');
   if (input.value === '' || !input.checkValidity()) {
     input.setCustomValidity(message); input.setAttribute('aria-invalid', 'true');
-    showSettings(true, false); input.focus(); input.reportValidity();
+    layout.revealSetting(input); input.focus(); input.reportValidity();
     throw new Error(message);
   }
   input.removeAttribute('aria-invalid');
@@ -79,9 +77,10 @@ async function saveSettings() {
   const controlsAppearance = validateAppearance({ opacity: Number($('controls-opacity').value) });
   const autoControls = $('auto-controls').checked;
   const connectionMode = $('connection-mode').value;
+  const courseSettings = coursePanel.settings();
   if (connectionMode === 'api') await apiForm.save();
   if (!names[provider]) throw new Error('请选择受支持的本地 CLI');
-  await chrome.storage.local.set({ connectionMode, pacing, provider, count, runAfterFill: run, runInBackground, controlsAppearance, autoControls });
+  await chrome.storage.local.set({ connectionMode, pacing, provider, count, runAfterFill: run, runInBackground, controlsAppearance, autoControls, courseSettings });
   settingsDirty = false; updateSummary();
   settingsStatus('已保存。外观与页内组件开关立即生效，任务配置在下次开始时生效。');
   return { connectionMode, pacing, provider, count, run, runInBackground };
@@ -89,7 +88,7 @@ async function saveSettings() {
 function isNativeError(message) { return /本地 CLI 桥|native messaging host|本地桥响应超时/i.test(message || ''); }
 function isPageError(message) { return /站点权限|授权本站|未读到完整题目|重新读取|页面尚未加载|暂时无法读取练习页|多个活动 frame|没有识别到练习题|练习标签被浏览器休眠/i.test(message || ''); }
 function showError(message) {
-  $('error').textContent = message || ''; $('error').hidden = !message;
+  $('error').textContent = message || ''; $('error').hidden = !message; $('error').dataset.kind = isNativeError(message) ? 'native' : 'other';
   if ($('connection-mode').value === 'local' && isNativeError(message)) {
     nativeBridgeFailed = true; connection = null;
     if (!healthChecking) {
@@ -108,7 +107,7 @@ async function command(action, data = {}) {
 function render(state) {
   currentState = state;
   showError(state.error);
-  const busy = state.busy || localBusy || apiBusy || settingsSaving;
+  const busy = state.busy || localBusy || apiBusy || settingsSaving || Boolean(coursePanel?.busy);
   for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter', 'auto-controls', 'connection-mode', 'controls-opacity', 'reset-position', 'retry-page']) $(id).disabled = busy;
   for (const id of ['refresh', 'retry-native']) $(id).disabled = busy || healthChecking;
   $('close-settings').disabled = settingsSaving;
@@ -172,6 +171,9 @@ function render(state) {
       : '答案尚未填写，可点击下方按钮填入页面。';
   }
   renderLog(state.log);
+  coursePanel?.updatePractice(state.busy || localBusy || apiBusy || settingsSaving, dataUseAccepted);
+  coursePanel?.setSettingsDisabled(busy);
+  layout?.render({ practice: state, course: coursePanel?.state, status, modelName: $('provider-summary').textContent, modelStatus: $('connection-status').textContent, consent: dataUseAccepted, pending: localBusy || apiBusy || settingsSaving });
 }
 function providerDetail() {
   const provider = connection?.providers?.find((item) => item.id === $('provider').value);
@@ -229,7 +231,7 @@ async function perform(action, data = {}, configured = false) {
     }
   }
   finally {
-    if (localOperation === operation) { localOperation = null; localBusy = false; if (currentState) render(currentState); }
+    if (localOperation === operation) { localOperation = null; localBusy = false; if (currentState) render(currentState); layout.focusInvalid(); }
   }
 }
 function showConnectionMode() {
@@ -252,16 +254,16 @@ for (const [id, action, extra] of [['solve', 'start', { fill: false }], ['auto',
   $(id).addEventListener('click', () => performConfigured(action, extra));
 }
 async function commitSettings(close = false) {
-  if (settingsSaving || localBusy || apiBusy || currentState?.busy) return;
+  if (settingsSaving || localBusy || apiBusy || currentState?.busy || coursePanel?.busy) return;
   settingsSaving = true; $('save-settings').disabled = true; $('save-settings').textContent = '正在保存…'; settingsStatus('正在保存…');
   const saving = saveSettings(); if (currentState) render(currentState);
   try { await saving; if (close) showSettings(false); }
   catch (error) { settingsStatus(`未保存：${error.message}`, true); }
-  finally { settingsSaving = false; $('save-settings').textContent = '保存设置'; if (currentState) render(currentState); }
+  finally { settingsSaving = false; $('save-settings').textContent = '保存设置'; if (currentState) render(currentState); layout.focusInvalid(); }
 }
 async function leaveSettings() {
   if (settingsSaving) return;
-  if (settingsDirty && !localBusy && !apiBusy && !currentState?.busy) await commitSettings(true);
+  if (settingsDirty && !localBusy && !apiBusy && !currentState?.busy && !coursePanel?.busy) await commitSettings(true);
   else {
     if (settingsDirty) settingsStatus('任务进行中，未保存的更改已保留；任务结束后可保存。');
     showSettings(false);
@@ -314,7 +316,21 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.dataConsentVersion) showDataUse(changes.dataConsentVersion.newValue === DATA_CONSENT_VERSION);
 });
+coursePanel = createCoursePanel({ onPractice: () => layout.showWorkspace('practice'), onChange: () => { if (currentState) render(currentState); }, onInvalid: (input) => layout.revealSetting(input) });
+layout = createPanelLayout({
+  onWorkspace: (name) => { if (name === 'course') void coursePanel.activate(); },
+  onInspect: (name) => { if (name === 'course') void coursePanel.scan(); else void perform('read'); },
+  onLeaveSettings: leaveSettings
+});
+$('course-settings-open').addEventListener('click', () => showSettings(true, true, 'course'));
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id === chrome.runtime.id && message?.type === 'panel-navigate' && ['home', 'course', 'practice', 'records'].includes(message.view)) {
+    if (!$('settings-view').hidden) return; // 不覆盖用户正在编辑且尚未保存的配置。
+    layout.showWorkspace(message.view);
+  }
+});
 try {
+  await coursePanel.init();
   showPacing(DEFAULT_PACING); showAppearance(DEFAULT_APPEARANCE);
   showDataUse((await chrome.storage.local.get('dataConsentVersion')).dataConsentVersion === DATA_CONSENT_VERSION);
   const { provider, count, runAfterFill, pacing, runInBackground, controlsAppearance, autoControls, connectionMode } = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'controlsAppearance', 'autoControls', 'connectionMode']);
@@ -333,6 +349,7 @@ try {
   catch (error) { pacingError += `外观配置已恢复默认值。${error.message}`; }
   updateSummary();
   render(await command('state'));
+  await layout.init();
   await refreshHealth();
   if (pacingError) showError(pacingError);
 } catch (error) { showError(error.message); }

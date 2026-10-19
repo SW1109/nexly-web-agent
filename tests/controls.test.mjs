@@ -132,7 +132,7 @@ test('installPageControls renders task feedback and keeps recovery controls avai
 
   const res = installPageControls({ phase: 'idle', busy: false });
   assert.equal(res.ok, true);
-  assert.equal(globalThis.__nexlyPageControls.revision, 5);
+  assert.equal(globalThis.__nexlyPageControls.revision, 7);
 
   const titleNode = created.find((n) => n.tagName === 'STRONG');
   assert.equal(titleNode?.textContent, 'QuizMate');
@@ -154,11 +154,14 @@ test('installPageControls renders task feedback and keeps recovery controls avai
   const stop = created.find(node => node.tagName === 'BUTTON' && node.textContent === '停止');
   const openPanel = created.find(node => node.tagName === 'BUTTON' && node.textContent === '打开侧栏');
   assert.ok(openPanel, '错误恢复入口应始终可见');
+  const closePanel = created.find(node => node.tagName === 'BUTTON' && node.textContent === '关闭侧栏');
+  assert.ok(closePanel, '页内组件应提供关闭浏览器侧栏的独立按钮');
   globalThis.__nexlyPageControls.paint({ phase: 'reading', operation: 'read', busy: true });
   assert.equal(start.disabled, true);
   assert.equal(pause.disabled, true, '一次性读取不能暂停');
   assert.equal(stop.disabled, false, '一次性读取可以停止');
   assert.equal(openPanel.disabled, false, '运行期间仍可打开侧栏');
+  assert.equal(closePanel.disabled, false, '运行期间仍可关闭侧栏');
 
   const sent = [];
   let resolveStart;
@@ -171,6 +174,7 @@ test('installPageControls renders task feedback and keeps recovery controls avai
   globalThis.__nexlyPageControls.paint({ phase: 'idle', busy: false });
   start.emit('click', { isTrusted: false });
   openPanel.emit('click', { isTrusted: false });
+  closePanel.emit('click', { isTrusted: false });
   assert.equal(sent.length, 0, '合成点击不能启动求解或打开侧栏');
   start.emit('click', { isTrusted: true });
   assert.equal(statusNode.textContent, '正在启动练习…');
@@ -186,7 +190,7 @@ test('installPageControls renders task feedback and keeps recovery controls avai
 
   chrome.runtime.sendMessage = async (message) => {
     sent.push(message);
-    if (message.action === 'openPanel') return { ok: true, data: { opened: true } };
+    if (['openPanel', 'closePanel'].includes(message.action)) return { ok: true, data: { opened: message.action === 'openPanel' } };
     throw new Error('Extension context invalidated.');
   };
   start.emit('click', { isTrusted: true });
@@ -201,6 +205,17 @@ test('installPageControls renders task feedback and keeps recovery controls avai
   assert.match(statusNode.textContent, /请刷新当前练习页/, '打开侧栏成功不应把未恢复的错误清掉');
   assert.equal(sent.at(-1).action, 'openPanel');
   assert.equal(sent.at(-1).source, 'page-controls');
+  const beforeClose = sent.length;
+  closePanel.emit('click', { isTrusted: true });
+  closePanel.emit('click', { isTrusted: true });
+  assert.equal(closePanel.textContent, '正在关闭…');
+  assert.equal(openPanel.disabled, true, '开关侧栏请求互斥，避免重复点击竞态');
+  await until(() => closePanel.textContent === '关闭侧栏');
+  assert.equal(sent.length, beforeClose + 1);
+  assert.equal(sent.at(-1).action, 'closePanel');
+  assert.equal(sent.at(-1).source, 'page-controls');
+  assert.equal(openPanel.disabled, false);
+  assert.match(statusNode.textContent, /请刷新当前练习页/, '关闭侧栏不应清空练习错误或改变任务状态');
   chrome.runtime.sendMessage = originalSend;
 
   const existingHost = globalThis.__nexlyPageControls.host;

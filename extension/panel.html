@@ -3,15 +3,39 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuizMate · 智答伴侣</title><link rel="stylesheet" href="panel.css"></head>
 <body>
 <header class="header">
-  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.4.4</span></h1><p>智答伴侣 · AI 做题助手</p></div></div>
+  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.6.0</span></h1><p>学习与练习，一处掌控</p></div></div>
   <button id="open-settings" class="settings-button" type="button" aria-controls="settings-view" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="white"/><circle cx="15" cy="17" r="3" fill="white"/></svg>设置</button>
 </header>
 <div class="connection-strip"><p id="connection-status" class="status" role="status">正在检查模型配置…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
 <div id="error" class="error global-error" role="alert" hidden></div>
 <div id="native-recovery" class="notice global-error" hidden><strong>本地桥连接需要恢复</strong><p>已安装本地桥时可重新检测；首次安装或更换浏览器时，打开设置获取对应命令。</p><div class="recovery-actions"><button id="retry-native" class="secondary" type="button">重新检测连接</button><a class="bridge-setup-link" href="native-setup.html" target="_blank" rel="noopener noreferrer">设置本地桥 →</a></div></div>
 <div id="page-recovery" class="notice global-error" hidden><p>回到练习页并等待题目加载后重试。需要授权时会请求当前站点的访问权限。</p><button id="retry-page" class="secondary" type="button">重新授权并读取</button><p class="caption">此操作只读取题目。</p></div>
-<nav class="resource-links" aria-label="帮助与反馈"><a href="help.html" target="_blank" rel="noopener noreferrer">操作手册</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">提 Bug</a><a data-project-link="feedback" target="_blank" rel="noopener noreferrer">建议</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">赞助</a></nav>
+
+<div class="navigation-shell"><nav class="workspace-tabs" role="tablist" aria-label="工作区">
+  <button id="tab-home" class="workspace-tab" role="tab" type="button" aria-selected="true" aria-controls="home-workspace"><span aria-hidden="true">◫</span>学习台</button>
+  <button id="tab-course" class="workspace-tab" role="tab" type="button" aria-selected="false" aria-controls="course-workspace" tabindex="-1"><span aria-hidden="true">▷</span>网课</button>
+  <button id="tab-practice" class="workspace-tab" role="tab" type="button" aria-selected="false" aria-controls="practice-workspace" tabindex="-1"><span aria-hidden="true">✧</span>练习</button>
+  <button id="tab-records" class="workspace-tab" role="tab" type="button" aria-selected="false" aria-controls="records-workspace" tabindex="-1"><span aria-hidden="true">≡</span>记录<span id="record-total" class="nav-count" hidden>0</span></button>
+</nav>
+</div>
 <main>
+<div id="task-view">
+  <div id="home-workspace" role="tabpanel" aria-labelledby="tab-home" class="workspace-pane">
+    <div class="workspace-heading"><div><p class="eyebrow">你的学习工作台</p><h2>从当前页面开始</h2></div><span class="badge">本机保存</span></div>
+    <section class="section context-card" aria-labelledby="context-title">
+      <div class="section-heading"><span id="context-kind" class="badge">当前页面</span><button id="context-refresh" class="quiet" type="button" aria-label="刷新当前页面识别">刷新 ↻</button></div>
+      <h3 id="context-title">正在查看当前页面…</h3><p id="context-host" class="caption"></p><p id="context-hint" class="muted">只识别页面类型，不会自动播放、调用 AI 或提交。</p>
+      <button id="context-inspect" class="primary wide" type="button" disabled>识别当前页面 →</button>
+    </section>
+    <div class="home-task-grid">
+      <button class="section task-card" type="button" data-workspace="course"><span class="task-card-icon" aria-hidden="true">▷</span><span><strong>网课学习</strong><small id="home-course-status">尚未识别课程</small><span id="home-course-title" class="caption">正常播放 · 安全换章 · 随堂练习</span></span><span aria-hidden="true">→</span></button>
+      <button class="section task-card" type="button" data-workspace="practice"><span class="task-card-icon" aria-hidden="true">✧</span><span><strong>AI 练习</strong><small id="home-practice-status">准备就绪</small><span id="home-practice-title" class="caption">选择 · 填空 · 编程 · 日志修正</span></span><span aria-hidden="true">→</span></button>
+    </div>
+    <section class="section connection-card" aria-labelledby="home-model-heading"><div class="section-heading"><h2 id="home-model-heading">AI 连接</h2><button class="quiet" type="button" data-settings-target="connection">配置连接 →</button></div><strong id="home-model-name">本地 CLI</strong><p id="home-model-status" class="muted">正在检查配置…</p><p id="home-consent-hint" class="caption"></p><button id="home-consent" class="quiet" type="button" data-workspace="practice" hidden>阅读 AI 数据说明 →</button><p class="caption">视频播放无需 AI。仅在解题时，数据才会发送给你选定的服务商。</p></section>
+    <section class="section platform-section" aria-labelledby="platform-title"><div class="section-heading"><h2 id="platform-title">支持的网课平台</h2><button class="quiet" type="button" data-settings-target="course">播放设置 →</button></div><div id="platform-links" class="platform-links"></div><p class="caption">仅预置这四个平台的有限站点权限。平台改版、登录或验证需要人工处理，不会伪造学时。</p></section>
+  </div>
+  <div id="practice-workspace" role="tabpanel" aria-labelledby="tab-practice" class="workspace-pane" hidden>
+  <div class="workspace-heading"><div><p class="eyebrow">AI 练习</p><h2>理解问题，再填写</h2></div><button class="quiet" type="button" data-settings-target="practice">练习设置 →</button></div>
 <section id="data-consent" class="section notice" aria-labelledby="data-use-title" hidden>
   <h2 id="data-use-title">开始前，了解数据如何使用</h2>
   <p>求解会把识别出的题目、选项、代码和去除查询参数的页面地址发送给你选定的 API 或本地 CLI 对应服务商；开启自动修正时，也会发送当前执行日志。AI 可能出错，请仅在获准使用辅助工具的练习中使用。</p>
@@ -19,7 +43,7 @@
   <label class="checkbox"><input id="data-consent-check" type="checkbox"><span>我已阅读并同意按上述方式向所选服务商发送练习数据。</span></label>
   <button id="accept-data-use" class="primary" type="button" disabled>确认并启用 AI 功能</button>
 </section>
-<div id="task-view">
+  <div class="practice-grid">
   <section class="section question-section" aria-labelledby="question-title">
     <div class="section-heading"><h2 id="question-title">当前练习</h2><button id="read" class="quiet" type="button">重新读取 <span aria-hidden="true">↻</span></button></div>
     <div id="empty" class="empty"><span aria-hidden="true">↗</span><p>从当前网页开始</p><small>打开练习页，点击“重新读取”识别题目。</small></div>
@@ -36,11 +60,58 @@
   <section id="answer-section" class="section" aria-labelledby="answer-title" hidden>
     <div class="section-heading"><h2 id="answer-title">答案预览</h2><span id="confidence" class="badge"></span></div><pre id="answer-body" class="preview answer"></pre><p id="explanation" class="muted"></p><p id="fill-status" class="caption" aria-live="polite"></p><div class="button-row"><button id="fill" class="secondary" type="button">填入此答案</button><button id="run" class="quiet" type="button">执行样例</button></div>
   </section>
-  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><div class="log-tools"><button id="clear-history" class="quiet" type="button">清除练习记录</button><button id="log-latest" class="quiet" type="button" hidden>回到最新</button></div><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details>
+
+  </div>
   <footer><span class="shortcut">Alt ⇧ N</span> 开始 / 暂停 / 继续<span class="footer-note">运行中的任务绑定启动时的练习页</span></footer>
+  </div>
+  <div id="course-workspace" role="tabpanel" aria-labelledby="tab-course" class="workspace-pane" hidden>
+    <div class="workspace-heading"><div><p class="eyebrow">网课学习</p><h2>专注当前章节</h2></div><button class="quiet" type="button" data-settings-target="course">课程设置 →</button></div>
+    <div class="course-grid">
+    <section class="section course-overview" aria-labelledby="course-heading">
+      <div class="section-heading"><h2 id="course-heading">课程控制</h2><button id="course-scan" class="quiet" type="button">识别当前课程 ↻</button></div>
+      <p class="caption">任务绑定启动时的课程页。切换标签不会重新绑定，也不会自动调用 AI。</p>
+      <div class="course-status-row"><span id="course-status" class="badge" role="status">尚未识别</span><span id="course-watched" class="caption">本次播放结束 0 段</span></div>
+      <p id="course-message" class="course-message" aria-live="polite"></p>
+      <div id="course-error" class="error" role="alert" hidden></div>
+      <div id="course-empty" class="course-empty"><strong>先打开已登录的课程页面</strong><p>进入视频播放页或章节目录，点击“识别当前课程”。平台改版或播放器尚未加载时，可先在原页面手动打开视频。</p></div>
+      <div id="course-current" hidden><span id="course-platform" class="caption"></span><h3 id="course-name"></h3><p id="course-chapter" class="muted"></p><progress id="course-progress" max="100" value="0" aria-label="当前视频播放进度"></progress><p id="course-progress-label" class="caption"></p></div>
+      <div class="button-row"><button id="course-start" class="primary" type="button">开始课程</button><button id="course-pause" class="secondary" type="button">暂停</button><button id="course-stop" class="danger" type="button">停止</button></div>
+      <div class="course-binding"><button id="course-next" class="secondary" type="button">下一章</button><span id="course-bound-tab" class="caption"></span><button id="course-focus" class="quiet" type="button">回到课程页 ↗</button></div>
+      <p class="caption">真实播放，不伪造学时；正常播放完毕不代表平台已认定完成。登录、验证码、锁定章节和考试页面均需人工处理。</p>
+      <button id="course-settings-open" class="quiet" type="button">调整课程设置 →</button>
+    </section>
+    <section id="course-quiz" class="section" aria-labelledby="course-quiz-heading" hidden>
+      <div class="section-heading"><h2 id="course-quiz-heading">随堂练习</h2><button id="course-show-answer" class="quiet" type="button">查看答案 →</button></div>
+      <label for="course-question">选择当前题目</label><select id="course-question" aria-describedby="course-ai-hint"></select>
+      <div class="button-row"><button id="course-preview" class="secondary" type="button">仅预览本题</button><button id="course-fill" class="primary" type="button">解题并填写本题</button></div>
+      <p id="course-ai-hint" class="caption"></p>
+    </section>
+    <section class="section directory-section" aria-labelledby="course-directory-heading">
+      <div class="section-heading"><h2 id="course-directory-heading">当前可见目录</h2><span id="course-chapter-count" class="caption">0 项</span></div>
+      <p id="course-directory-empty" class="muted">尚未读到目录。可在原页面展开章节列表后重新识别；没有唯一目录时不会猜测下一章。</p>
+      <div class="directory-tools"><label for="course-directory-search" class="sr-only">搜索章节名称</label><input id="course-directory-search" type="search" placeholder="搜索章节名称" autocomplete="off"><button id="course-locate" class="quiet" type="button">定位当前</button></div>
+      <p id="course-filter-empty" class="caption" hidden>没有匹配的章节，请尝试其他关键词。</p>
+      <ol id="course-chapters" class="course-chapters" aria-label="课程章节目录"></ol>
+    </section>
+    </div>
+  </div>
+  <div id="records-workspace" role="tabpanel" aria-labelledby="tab-records" class="workspace-pane" hidden>
+    <div class="workspace-heading"><div><p class="eyebrow">活动记录</p><h2>过程可见，问题可追溯</h2></div></div>
+    <p class="workspace-description caption">仅保存在当前浏览器会话。各任务最新在上，不包含 API Key；反馈前请检查并去除私有内容。</p>
+    <div class="record-filters" role="group" aria-label="记录类型"><button type="button" data-record-filter="all" aria-pressed="true">全部</button><button type="button" data-record-filter="practice" aria-pressed="false">练习</button><button type="button" data-record-filter="course" aria-pressed="false">课程</button></div>
+    <div class="records-grid"><div data-record-kind="practice">  <details class="section log-section" open><summary>任务记录 <span class="caption">最新在上 · <span id="log-count">0</span></span></summary><div class="log-tools"><button id="clear-history" class="quiet" type="button">清除练习记录</button><button id="log-latest" class="quiet" type="button" hidden>回到最新</button></div><ul id="log" aria-label="任务记录，最新在上" tabindex="0" aria-live="polite"></ul></details></div><div data-record-kind="course">    <details class="section log-section" open><summary>课程记录 <span class="caption">最新在上 · <span id="course-log-count">0</span></span></summary><div class="log-tools"><button id="course-clear" class="quiet" type="button">清除课程记录</button><button id="course-log-latest" class="quiet" type="button" hidden>回到最新</button></div><ul id="course-log" class="course-log" aria-label="课程记录，最新在上" tabindex="0" aria-live="polite"></ul></details></div></div>
+  </div>
 </div>
 <div id="settings-view" hidden>
-  <div class="settings-heading"><button id="close-settings" class="quiet" type="button">← 返回练习</button><h2 tabindex="-1" id="settings-title">设置</h2><p class="muted">所有偏好，一处管理。</p></div>
+  <div class="settings-heading"><button id="close-settings" class="quiet" type="button">← 返回工作区</button><h2 tabindex="-1" id="settings-title">设置</h2><p class="muted">连接、播放与操作偏好，一处管理。</p></div>
+  <div class="settings-layout"><nav class="settings-nav" role="tablist" aria-label="设置分类">
+    <button id="setting-connection" type="button" role="tab" aria-selected="true" aria-controls="settings-connection" data-settings-tab="connection">模型连接</button>
+    <button id="setting-course" type="button" role="tab" aria-selected="false" aria-controls="settings-course" tabindex="-1" data-settings-tab="course">课程播放</button>
+    <button id="setting-practice" type="button" role="tab" aria-selected="false" aria-controls="settings-practice" tabindex="-1" data-settings-tab="practice">练习策略</button>
+    <button id="setting-controls" type="button" role="tab" aria-selected="false" aria-controls="settings-controls" tabindex="-1" data-settings-tab="controls">页内组件</button>
+    <button id="setting-about" type="button" role="tab" aria-selected="false" aria-controls="settings-about" tabindex="-1" data-settings-tab="about">隐私与帮助</button>
+  </nav><div class="settings-content">
+  <div id="settings-connection" data-settings-panel="connection" role="tabpanel" aria-labelledby="setting-connection">
   <section class="section" aria-labelledby="connection-title">
     <div class="section-heading"><h2 id="connection-title">模型连接</h2><button id="refresh" class="quiet" type="button">刷新连接</button></div>
     <label for="connection-mode">使用方式</label><select id="connection-mode"><option value="local">本地模式 · 使用已安装的 CLI</option><option value="api">API 模式 · 无需 CLI 或本地桥</option></select>
@@ -70,6 +141,7 @@
       <p class="caption">连接测试只发送固定测试题，不读取当前网页；会产生少量用量。失败、超时或取消后不自动重试。</p><p id="api-status" class="caption" role="status" aria-live="polite">填写并保存后即可使用。</p>
     </div>
   </section>
+  </div><div id="settings-practice" data-settings-panel="practice" role="tabpanel" aria-labelledby="setting-practice" hidden>
   <section class="section" aria-labelledby="batch-title">
     <h2 id="batch-title">连续作答</h2>
     <div class="inline-field"><label for="count">每批题数 <span class="caption">1～100 题</span></label><input id="count" type="number" min="1" max="100" step="1" value="20" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">默认 20 题。普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
@@ -84,14 +156,26 @@
     <div class="field"><label for="typing-interval">每字符输入间隔 <span class="unit">ms</span></label><input id="typing-interval" data-pacing="typingIntervalMs" type="number" required aria-describedby="typing-interval-hint"><p class="caption" id="typing-interval-hint"></p></div>
     <p class="caption">选项、字段、样例和换题共用操作间隔。暂停和停止立即响应。</p>
   </section>
+  </div><div id="settings-course" data-settings-panel="course" role="tabpanel" aria-labelledby="setting-course" hidden>
+  <section class="section" aria-labelledby="course-settings-heading">
+    <h2 id="course-settings-heading" tabindex="-1">网课学习设置</h2>
+    <label class="checkbox"><input id="course-auto-next" type="checkbox" checked><span>视频正常结束后尝试打开下一章节<small>只有当前章节和下一入口都明确时才继续；测验、锁定章节与不确定页面暂停等待。</small></span></label>
+    <div class="field"><label for="course-playbackRate">播放速度 <span class="unit">倍</span></label><input id="course-playbackRate" type="number" required aria-describedby="course-rate-hint"><p id="course-rate-hint" class="caption">默认 1 倍；范围 0.5～16，步长 0.25。平台限制优先，不强制突破播放器限制。</p></div>
+    <div class="field"><label for="course-nextDelayMs">换章等待时间 <span class="unit">ms</span></label><input id="course-nextDelayMs" type="number" required aria-describedby="course-delay-hint"><p id="course-delay-hint" class="caption">默认 3000 ms；范围 0～30000 ms，步长 1000 ms。</p></div>
+    <div class="field"><label for="course-stallSeconds">无进度暂停时间 <span class="unit">秒</span></label><input id="course-stallSeconds" type="number" required aria-describedby="course-stall-hint"><p id="course-stall-hint" class="caption">默认 120 秒；范围 30～600 秒。长时间无播放进度时暂停，不反复点击。</p></div>
+    <label class="checkbox"><input id="course-auto-preview" type="checkbox"><span>发现唯一随堂题时自动预览一次答案<small>默认关闭。需同意 AI 数据使用并配置服务商，可能产生费用；不会自动填写、提交或重复请求同一题。</small></span></label>
+    <p class="caption">设置在下次开始或继续课程时生效。播放与答题互斥；课程状态只保存在当前浏览器会话，关闭/重载后需人工继续。</p>
+  </section>
+  </div><div id="settings-controls" data-settings-panel="controls" role="tabpanel" aria-labelledby="setting-controls" hidden>
   <section class="section" aria-labelledby="appearance-title">
     <h2 id="appearance-title">页内组件</h2>
-    <label class="checkbox"><input id="auto-controls" type="checkbox" checked><span>打开练习页时自动启用页内组件<small>默认开启；只在已授权的练习站点注入，不必先打开侧栏</small></span></label>
+    <label class="checkbox"><input id="auto-controls" type="checkbox" checked><span>打开支持的课程或练习页时自动显示页内组件<small>默认开启；只在已授权的站点注入，不必先打开侧栏</small></span></label>
     <div class="appearance-preview" aria-hidden="true"><div id="opacity-preview"><img src="icons/icon-32.png" alt=""></div><div><strong>轻触即用</strong><p>悬浮展开 · 离开收起 · 拖动移动</p></div></div>
     <div class="range-label"><label for="controls-opacity">显示不透明度</label><output id="opacity-value" for="controls-opacity">90%</output></div><input id="controls-opacity" type="range" aria-describedby="opacity-hint"><p id="opacity-hint" class="caption"></p>
     <button id="reset-position" class="quiet" type="button">将组件移回右下角</button><p id="position-status" class="caption" role="status"></p>
     <p class="caption">拖动图标或展开后的标题栏可移动位置。键盘聚焦图标可展开，Alt + 方向键微调，Esc 收起。关闭上方开关会立即移除已注入的组件，新打开的练习页也不再自动注入。</p>
   </section>
+  </div><div id="settings-about" data-settings-panel="about" role="tabpanel" aria-labelledby="setting-about" hidden>
   <section class="section project-section" aria-labelledby="project-title">
     <h2 id="project-title">帮助与项目</h2><p class="muted">使用问题、适配建议和功能想法，欢迎在项目中交流。反馈前请去除 API Key、账号信息和私有题目。</p>
     <a class="repository-link" data-project-link="repository" target="_blank" rel="noopener noreferrer">github.com/SW1109/nexly-web-agent ↗</a>
@@ -99,8 +183,10 @@
     <button id="revoke-data-use" class="quiet" type="button">撤回 AI 数据使用同意</button>
     <p class="caption">QuizMate 为社区项目，与浏览器厂商、题目平台和模型服务商无隶属关系。赞助自愿，不解锁功能。</p>
   </section>
+  </div></div></div>
   <div class="settings-footer"><p id="settings-status" class="caption" role="status">任务配置在下一次任务生效。</p><button id="save-settings" class="primary wide" type="button">保存设置</button></div>
 </div>
 </main>
+<footer class="app-footer"><span>QuizMate · 学习辅助，不代替判断</span><div><a href="help.html" target="_blank" rel="noopener noreferrer">手册</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">反馈</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">赞助</a></div></footer>
 <script src="panel.js" type="module"></script>
 </body></html>

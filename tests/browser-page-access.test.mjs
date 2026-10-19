@@ -107,7 +107,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
     const panel = await context.newPage();
     const errors = [];
     panel.on('pageerror', error => errors.push(error.message));
-    await panel.goto(origin + '/panel.html');
+    await panel.goto(origin + '/panel.html?view=practice');
     await panel.waitForFunction(() => document.getElementById('connection-status').textContent === '本地桥已连接' && !document.getElementById('auto').disabled);
     assert.equal(await panel.evaluate(() => window.__requests.length), 0, 'opening the panel must not prompt for site access');
     assert.equal(await panel.evaluate(() => window.__commands.some(command => ['read', 'start', 'enableControls'].includes(command.action))), false, 'opening the panel must not read or act on the practice');
@@ -124,6 +124,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
         assert.equal(await panel.locator('#auto-controls').isChecked(), true);
         if (button === 'auto') {
           await panel.locator('#open-settings').click();
+          await panel.locator('#setting-practice').click();
           await panel.locator('#count').fill('100');
           await panel.locator('#close-settings').click();
         }
@@ -183,6 +184,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
       assert.equal(await panel.locator('#task-summary').textContent(), '每批 100 题');
       assert.equal(await panel.locator('#auto-controls').isChecked(), false);
       await panel.locator('#open-settings').click();
+      await panel.locator('#setting-practice').click();
       await panel.locator('#count').fill('101');
       await panel.locator('#save-settings').click();
       await panel.waitForFunction(() => document.getElementById('count').getAttribute('aria-invalid') === 'true');
