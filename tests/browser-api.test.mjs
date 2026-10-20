@@ -13,9 +13,28 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
   let delay = 0, status = 200;
   const received = [], errors = [];
   const server = createServer(async (request, response) => {
+    if (request.url === '/unrecognized-form') { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end('<!doctype html><html><body><label>联系邮箱<input type="email"></label></body></html>'); return; }
+    if (request.url.startsWith('/mod/assign/view.php?')) {
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end(`<!doctype html><html lang="zh-CN"><title>模拟大作业</title><body data-navigation="0" data-submit="0"><aside>PRIVATE-COURSE-NAVIGATION</aside><main id="region-main"><h1>大作业</h1><div id="intro"><h2>大作业说明</h2><p>学生答题不能复制粘贴。论述严谨，字数不少于1000字。</p><p>大作业：请结合材料说明创新机制。</p></div><section class="submissionsummarytable">没有尝试<textarea id="assignment-editor">人工原稿</textarea><button onclick="document.body.dataset.navigation++">添加作业</button><button onclick="document.body.dataset.submit++">提交作业</button><button onclick="document.body.dataset.navigation++">下一活动</button></section></main></body></html>`); return;
+    }
     if (request.url === '/practice') {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       response.end('<!doctype html><html lang="zh-CN"><title>练习</title><div data-nexly-question><h1>单选题：2 + 2 等于多少？</h1><label><input type="radio" name="answer" value="a">A. 3</label><label><input type="radio" name="answer" value="b">B. 4</label></div></html>'); return;
+    }
+    if (request.url === '/multi-practice') {
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end(`<!doctype html><html lang="zh-CN"><title>同页多题</title><body data-nav="0" data-submit="0"><header>PRIVATE-HEADER<input type="text" aria-label="搜索课程"></header><form onsubmit="event.preventDefault();document.body.dataset.submit++">
+        <div class="que description"><h2>一、单项选择题</h2></div>
+        ${[1,2].map(index=>`<div class="que multichoice" id="q${index}"><div class="info"><span class="state">还未作答</span><label><input type="checkbox">标记试题</label></div><div class="content"><div class="qtext">选择四的正确表示</div><label><input type="radio" name="q${index}" value="a" ${index===1?'checked':''}>A. 3</label><label><input type="radio" name="q${index}" value="b">B. 4</label><div class="qtype_multichoice_clearchoice ${index===1?'':'sr-only'}"><input type="radio" name="q${index}" value="-1" class="sr-only" aria-hidden="true"><a href="#">清空我的选择</a></div></div></div>`).join('')}
+        <div class="que description"><h2>二、判断题</h2></div>
+        <div class="que truefalse" id="q3"><div class="info"><span class="state">还未作答</span></div><div class="qtext">此判断题仅用于测试</div><label><input type="radio" name="q3" value="a">对</label><label><input type="radio" name="q3" value="b">错</label></div>
+        <div class="que multichoice" id="q4"><div class="qtext">多选题：选择多个答案</div>${['甲','乙','丙'].map((value,index)=>`<label><input type="checkbox" value="${index}">${value}</label>`).join('')}</div>
+        <div class="que shortanswer" id="q5"><div class="qtext">填空题：填写结果</div><input type="text" aria-label="结果"></div>
+        <div class="que essay" id="q6" style="margin-top:900px"><div class="qtext">简答题：填写说明</div><textarea aria-label="说明"></textarea></div>
+        <div class="que multichoice" hidden><div class="qtext">隐藏缓存题</div><input type="radio"><input type="radio"></div>
+        <button type="button" id="sheet-next" onclick="document.body.dataset.nav++">下一题</button><button type="button" onclick="document.body.dataset.nav++">上一题</button><button id="sheet-submit">提交所有答案</button></form>
+        <script>document.querySelectorAll('.que input,.que textarea').forEach(input=>input.addEventListener('change',()=>{const root=input.closest('.que'),state=root.querySelector('.state'),clear=root.querySelector('.qtype_multichoice_clearchoice');if(state)state.textContent='已作答';if(clear)clear.classList.remove('sr-only');}));</script></body></html>`);return;
     }
     if (['/code-practice', '/codemirror-practice'].includes(request.url)) {
       const codeMirror = request.url === '/codemirror-practice', language = codeMirror ? 'TypeScript' : 'ArkTS';
@@ -51,7 +70,7 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
     const question = JSON.parse(prompt.split('QUESTION_DATA:\n')[1]);
     const answer = question.type === 'code'
       ? { questionId: question.questionId, type: 'code', choiceIds: [], fills: [], code: question.language === 'TypeScript' ? (question.executionFeedback ? 'console.log(1 + 1);' : 'const sum = 1n + 1n;\nconsole.log(sum.toString());') : (question.executionFeedback ? 'const values = new Set<number>();\nvalues.forEach((n) => console.log(n));' : 'const values = new Set<number>();\nfor (const n of values) {}'), explanation: '模拟模型：根据页面编译日志修正迭代方式。', confidence: 1 }
-      : { questionId: question.questionId, type: question.type, choiceIds: ['option-1'], fills: [], code: '', explanation: '2 + 2 = 4。', confidence: 1 };
+      : { questionId: question.questionId, type: question.type, choiceIds: ['blank','text'].includes(question.type) ? [] : question.type === 'multiple' ? ['option-0','option-2'] : ['option-1'], fills: question.fields.map(field => ({fieldId:field.id,value:'测试结果 42'})), code: '', explanation: '2 + 2 = 4。', confidence: 1 };
     const timer = setTimeout(() => {
       if (response.destroyed) return;
       response.setHeader('Content-Type', 'text/event-stream');
@@ -155,6 +174,96 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     if (process.env.NEXLY_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.NEXLY_SCREENSHOT_DIR, `nexly-api-${width}.png`), fullPage: true });
   }
+  await t.test('Moodle assignment is recognized and produces one review draft without editor writes, navigation or submission', async (t) => {
+    const assignment = await context.newPage(); await assignment.goto(origin + '/mod/assign/view.php?id=123');
+    const command = action => page.evaluate(action => chrome.runtime.sendMessage({ type: 'command', action }), action);
+    t.after(async () => { await command('stop'); await assignment.close(); await exercise.bringToFront(); });
+    if (await page.locator('#close-settings').isVisible()) await page.locator('#close-settings').click();
+    const read = await command('read'); assert.equal(read.ok, true, read.error);
+    assert.equal(read.data.question.type, 'text'); assert.equal(read.data.question.assignment.minimumCharacters, 1000);
+    const before = received.length;
+    const started = await page.evaluate(() => chrome.runtime.sendMessage({ type: 'command', action: 'start', count: 20 }));
+    assert.equal(started.ok, true, started.error);
+    const state = await page.evaluate(async () => {
+      for (let index = 0; index < 400; index++) {
+        const { taskState } = await chrome.storage.session.get('taskState');
+        if (taskState && !taskState.busy) return taskState;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error('Assignment preview did not complete');
+    });
+    assert.equal(state.phase, 'ready', state.error); assert.equal(state.autoFill, false); assert.equal(state.completed, 0);
+    const requests = received.slice(before).filter(entry => entry.path === '/v1/chat/completions');
+    assert.equal(requests.length, 1); assert.doesNotMatch(requests[0].body.messages[0].content, /PRIVATE-COURSE|人工原稿/);
+    assert.equal(await assignment.locator('#assignment-editor').inputValue(), '人工原稿');
+    assert.equal(await assignment.getAttribute('body', 'data-navigation'), '0'); assert.equal(await assignment.getAttribute('body', 'data-submit'), '0');
+    await page.waitForFunction(() => document.getElementById('question-type').textContent.includes('大作业'));
+    assert.equal(await page.locator('#auto').textContent(), '生成作业参考草稿');
+    assert.equal(await page.locator('#fill').isVisible(), false);
+    assert.match(await page.locator('#practice-hint').textContent(), /禁止复制粘贴/);
+    assert.match(await page.locator('#fill-status').textContent(), /未填写、保存或提交/);
+    assert.match(await page.locator('#fill-status').textContent(), /低于题面 1000 字要求/);
+    assert.equal((await command('fill')).ok, false);
+    for (const width of [320, 900]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      if (process.env.NEXLY_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.NEXLY_SCREENSHOT_DIR, `nexly-assignment-${width}.png`), fullPage: true });
+    }
+    await assignment.goto(origin + '/unrecognized-form');
+    assert.equal((await command('read')).ok, false);
+    const cleared = await page.evaluate(async () => (await chrome.storage.session.get('taskState')).taskState);
+    assert.equal(cleared.question, null); assert.equal(cleared.answer, null); assert.equal(cleared.target, null);
+    assert.equal(await page.locator('#answer-section').isVisible(), false);
+  });
+  // Moodle 同页多题：真实 DOM + Worker + API，包含重复题干、标记框、隐藏题和屏幕外题。
+  await t.test('all current-page questions are filled without navigation or submission', async (t) => {
+    const sheet = await context.newPage(); await sheet.goto(origin + '/multi-practice');
+    const command = action => page.evaluate(action => chrome.runtime.sendMessage({type:'command',action}), action);
+    t.after(async () => { delay = 0; await command('stop'); await sheet.close(); await exercise.bringToFront(); });
+    // waitForFunction 的同步轮询不能拿 Promise 当条件，否则会在 busy 仍为 true 时提前结束。
+    const finish = () => page.evaluate(async () => {
+      let state;
+      for (let i = 0; i < 400; i++) {
+        state = (await chrome.storage.session.get('taskState')).taskState;
+        if (state && !state.busy) return state;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error(`Current-page task never completed: ${JSON.stringify(state)}`);
+    });
+    const callsBefore = received.length;
+    const preview = await page.evaluate(() => chrome.runtime.sendMessage({type:'command',action:'start',fill:false,count:1}));
+    assert.equal(preview.ok,true,preview.error);assert.equal(preview.data.busy,true);
+    assert.equal((await finish()).phase,'ready');
+    assert.equal(await sheet.locator('#q1 input[value=b]').isChecked(),false,'preview must never fill the page');
+    assert.equal(received.slice(callsBefore).filter(entry=>entry.path==='/v1/chat/completions').length,1);
+    const before = received.length;
+    const started = await page.evaluate(() => chrome.runtime.sendMessage({type:'command',action:'start',count:1}));
+    assert.equal(started.ok,true,started.error);assert.equal(started.data.busy,true);
+    const state = await finish();
+    assert.equal(state.phase,'filled',state.error);assert.equal(state.completed,6);
+    for(const id of ['q1','q2','q3'])assert.equal(await sheet.locator(`#${id} input[value=b]`).isChecked(),true,id);
+    assert.deepEqual(await sheet.locator('#q4 input:checked').evaluateAll(nodes=>nodes.map(node=>node.value)),['0','2']);
+    assert.equal(await sheet.locator('#q5 input').inputValue(),'测试结果 42');assert.equal(await sheet.locator('#q6 textarea').inputValue(),'测试结果 42');
+    assert.equal(await sheet.locator('.info input:checked').count(),0,'flag checkboxes must remain untouched');
+    assert.equal(await sheet.locator('header input').inputValue(),'');
+    assert.equal(await sheet.getAttribute('body','data-nav'),'0');assert.equal(await sheet.getAttribute('body','data-submit'),'0');
+    const requests = received.slice(before).filter(entry=>entry.path==='/v1/chat/completions').map(entry=>JSON.parse(entry.body.messages[0].content.split('QUESTION_DATA:\n')[1]));
+    assert.equal(requests.length,6);assert.equal(new Set(requests.map(question=>question.questionId)).size,6);
+    assert.deepEqual(requests.map(question=>question.options.length),[2,2,2,3,0,0]);
+    assert.ok(!JSON.stringify(requests).includes('清空我的选择'));
+    assert.ok(!JSON.stringify(requests).includes('PRIVATE-HEADER'));assert.ok(!JSON.stringify(requests).includes('隐藏缓存题'));
+    assert.equal(await page.locator('#task-summary').textContent(),'当前页 6 题');
+    // 在模型返回前替换题干：旧答案不落地，也不把下一页或新题混入当前页队列。
+    await sheet.reload();await sheet.bringToFront();delay=200;
+    const changedBefore=received.length;
+    assert.equal((await command('start')).ok,true);
+    for(let i=0;i<100&&!received.slice(changedBefore).some(entry=>entry.path==='/v1/chat/completions');i++)await new Promise(resolve=>setTimeout(resolve,10));
+    await sheet.locator('#q1 .qtext').evaluate(node=>node.textContent='题干已被手动替换');await finish();
+    assert.equal((await page.evaluate(async()=>(await chrome.storage.session.get('taskState')).taskState)).phase,'error');
+    assert.equal(await sheet.locator('#q1 input[value=b]').isChecked(),false);
+    assert.equal(received.slice(changedBefore).filter(entry=>entry.path==='/v1/chat/completions').length,1);
+
+  });
   // 实际等待超过 MV3 的空闲窗口，验证 offscreen 的活跃任务心跳与侧栏关闭后的回填。
   delay = 34000;
   await background.evaluate((id) => chrome.tabs.update(id, { active: true }), tabId);

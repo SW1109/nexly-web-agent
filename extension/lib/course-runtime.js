@@ -87,26 +87,20 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
     const snapshot = state.snapshot;
     if (snapshot.gate) throw new Error(snapshot.gate);
     if (!snapshot.questions.length) throw new Error('当前页面未识别到随堂练习，请打开题目后刷新');
-    let question = snapshot.questions.find((item) => item.selected);
-    if (!question && snapshot.questions.length === 1) {
-      await action(state.targets.quiz, 'chooseQuestion', { key: snapshot.questions[0].key }); assertEpoch(expected);
-      await updateCapture(state.tabId, expected);
-      question = state.snapshot.questions[0];
-    }
-    if (!question) throw new Error('页面有多道题，请先在网课区选择要解答的题目');
-    const key = `${state.tabId}|${state.targets.quiz.documentId}|${question.key}`;
-    previews.add(key);
+    const key = `${state.tabId}|${state.targets.quiz.documentId}|${snapshot.questions[0].key}`;
+    // 网课入口复用练习区的同页队列；预览只取首题，不再要求或写入人工选中标记。
     await solveQuiz({ tabId: state.tabId, fill }); assertEpoch(expected);
-    await publish({}, fill ? '已启动本题解题与受控填写；答案在练习区展示，不会自动提交。' : '已启动本题答案预览；答案在练习区展示，不会填写或提交。');
+    previews.add(key);
+    await publish({}, fill ? `已启动当前页 ${snapshot.questions.length} 道题的解答与受控填写；完成本页后停止，不翻页、不提交。` : '已启动当前页首题答案预览；答案在练习区展示，不会填写或提交。');
   }
   async function begin(expected) {
     if (practiceBusy()) throw new Error('已有答题或连接测试运行，请先停止或等待完成');
     if (state.snapshot.gate) return pause(state.snapshot.gate, 'blocked');
     if (state.snapshot.questions.length) {
       await stopWatcher(true); assertEpoch(expected);
-      await publish({ running: false, operation: '', phase: 'awaitingQuiz', error: '' }, '发现随堂练习，课程已暂停；可选择题目后预览或填写，提交由你确认。');
-      if (state.settings.autoPreviewQuiz) {
-        const question = state.snapshot.questions.find((item) => item.selected) || (state.snapshot.questions.length === 1 ? state.snapshot.questions[0] : null);
+      await publish({ running: false, operation: '', phase: 'awaitingQuiz', error: '' }, `发现当前页 ${state.snapshot.questions.length} 道随堂练习，课程已暂停；可直接预览首题或解答本页，提交由你确认。`);
+      if (state.settings.autoPreviewQuiz && state.snapshot.questions.length === 1) {
+        const question = state.snapshot.questions[0];
         const key = question && `${state.tabId}|${state.targets.quiz.documentId}|${question.key}`;
         if (key && !previews.has(key)) await preview(false, expected);
       }
@@ -191,7 +185,7 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
     operation = true;
     const expected = ++epoch;
     try {
-      if (!['scan', 'start', 'resume', 'selectChapter', 'chooseQuestion', 'previewQuiz', 'fillQuiz', 'nextChapter'].includes(message.action)) throw new Error('不支持的课程命令');
+      if (!['scan', 'start', 'resume', 'selectChapter', 'previewQuiz', 'fillQuiz', 'nextChapter'].includes(message.action)) throw new Error('不支持的课程命令');
       if (practiceBusy() && !['scan'].includes(message.action)) throw new Error('已有答题或连接测试运行，请先停止或等待完成');
       await publish({ operation: message.action, error: '' }); assertEpoch(expected);
       if (message.action === 'scan') {
@@ -210,7 +204,6 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
           await begin(expected);
         } else if (message.action === 'nextChapter') await advance(expected, false, true);
         else if (message.action === 'selectChapter') await selectChapter(message.key, expected, false);
-        else if (message.action === 'chooseQuestion') { await action(state.targets.quiz, 'chooseQuestion', { key: message.key }); assertEpoch(expected); await updateCapture(state.tabId, expected); }
         else await preview(message.action === 'fillQuiz', expected);
       }
     } catch (error) {

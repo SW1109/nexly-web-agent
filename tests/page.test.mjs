@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { pageAction } from '../extension/lib/page.js';
+import { COURSE_PLATFORMS } from '../extension/lib/course-platforms.js';
 
 // pageAction 由 chrome.scripting 序列化进页面，依赖真实 DOM。这里只用最小桩执行读取路径，
 // 复现“页面上存在常驻代码编辑器时，单选题被误判成编程题并试图点击执行验证”的场景。
@@ -40,6 +41,7 @@ class FakeElement {
   click() { (this.events ||= []).push('click'); if (this.onClick) this.onClick(this); }
   dispatchEvent(event) { (this.events ||= []).push(event.type); if (this.onEvent) this.onEvent(event); return true; }
   querySelectorAll(selector) { return descendants(this).filter((node) => matches(node, selector)); }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   cloneNode() { const text = this._text; return { get textContent() { return text; }, querySelectorAll: () => [], append: () => {} }; }
 }
 
@@ -64,7 +66,7 @@ function matchGroup(node, group) {
 function matches(node, selector) { return selector.split(',').some((group) => matchGroup(node, group)); }
 function descendants(node) { return node.children.flatMap((child) => [child, ...descendants(child)]); }
 
-async function readPage(body, href = 'https://example.com/practice') {
+async function readPage(body, href = 'https://example.com/practice', payload = {}) {
   const nodes = [body, ...descendants(body)];
   globalThis.document = {
     visibilityState: 'visible', body, documentElement: body,
@@ -74,10 +76,10 @@ async function readPage(body, href = 'https://example.com/practice') {
     getElementById: (id) => nodes.find((node) => node.id === id) || null
   };
   globalThis.window = { parent: null, frameElement: null };
-  globalThis.location = { href, origin: new URL(href).origin, pathname: new URL(href).pathname };
+  globalThis.location = { href, protocol: new URL(href).protocol, origin: new URL(href).origin, pathname: new URL(href).pathname };
   globalThis.getComputedStyle = (node) => ({ display: node._display || 'block', visibility: node._visibility || 'visible' });
   globalThis.CSS = { escape: (value) => String(value) };
-  return pageAction('read');
+  return pageAction('read', payload);
 }
 
 const radio = (label) => new FakeElement({ tag: 'input', attrs: { type: 'radio', 'aria-label': label } });
@@ -451,4 +453,101 @@ test('nested output tabs retain their enclosing execution status instead of losi
   const result = await page.poll(run.runToken);
   assert.equal(result.outcome, 'failed'); assert.match(result.result, /编译错误/);
   await pageAction('releaseRun', { runToken: run.runToken });
+});
+
+
+test('same-page questions are scoped independently, including identical stems and offscreen blocks', async () => {
+  const blocks = [0, 1, 2].map(index => new FakeElement({ attrs: { 'data-nexly-question': '', id: `sheet-${index}` }, text: '单选题：选择正确答案', children: [radio(`A. 第 ${index + 1} 题甲`), radio(`B. 第 ${index + 1} 题乙`)] }));
+  const body = new FakeElement({ tag: 'body', children: blocks });
+  const first = await readPage(body);
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.pageQuestions.keys.length, 3);
+  assert.equal(first.question.options.length, 2);
+  assert.deepEqual(first.question.options.map(item => item.text), ['A. 第 1 题甲', 'B. 第 1 题乙']);
+  const second = await readPage(body, undefined, { questionKey: first.pageQuestions.keys[1] });
+  assert.equal(second.ok, true, second.error);
+  assert.deepEqual(second.question.options.map(item => item.text), ['A. 第 2 题甲', 'B. 第 2 题乙']);
+  assert.notEqual(second.question.questionId, first.question.questionId);
+  assert.equal(second.pageQuestions.signature, first.pageQuestions.signature);
+  const stale = await readPage(body, undefined, { questionKey: 'missing-block' });
+  assert.equal(stale.ok, false); assert.match(stale.error, /题块已变化或消失/);
+  const identical = new FakeElement({ tag: 'body', children: [0, 1].map(index => new FakeElement({ attrs: { 'data-nexly-question': '', id: `identical-${index}` }, text: '单选题：相同题干', children: [radio('A. 甲'), radio('B. 乙')] })) });
+  const a = await readPage(identical), b = await readPage(identical, undefined, { questionKey: a.pageQuestions.keys[1] });
+  assert.notEqual(a.question.questionId, b.question.questionId, '相同题面不能让后一题被去重跳过');
+});
+
+test('Moodle skips description blocks and flag checkboxes while recognizing choice, judge and blanks', async () => {
+  const flag = new FakeElement({ classes: ['info'], children: [checkbox('标记试题')] });
+  const clear = new FakeElement({ classes: ['qtype_multichoice_clearchoice'], children: [radio(''), new FakeElement({ tag: 'a', text: '清空我的选择' })] });
+  const blocks = [
+    new FakeElement({ classes: ['que', 'description'], text: '一、单项选择题' }),
+    new FakeElement({ classes: ['que', 'multichoice'], attrs: { id: 'q-1' }, text: '请选择正确答案', children: [flag, radio('A. 甲'), radio('B. 乙'), clear] }),
+    new FakeElement({ classes: ['que', 'truefalse'], attrs: { id: 'q-2' }, text: '请判断此陈述', children: [radio('对'), radio('错')] }),
+    new FakeElement({ classes: ['que', 'shortanswer'], attrs: { id: 'q-3' }, text: '填写结果', children: [new FakeElement({ tag: 'input', attrs: { type: 'text' } })] })
+  ];
+  const body = new FakeElement({ tag: 'body', children: blocks });
+  const first = await readPage(body);
+  assert.equal(first.ok, true, first.error); assert.equal(first.pageQuestions.keys.length, 3);
+  assert.equal(first.question.type, 'single'); assert.equal(first.question.options.length, 2);
+  const judge = await readPage(body, undefined, { questionKey: first.pageQuestions.keys[1] });
+  assert.equal(judge.question.type, 'judge'); assert.equal(judge.question.options.length, 2);
+  const blank = await readPage(body, undefined, { questionKey: first.pageQuestions.keys[2] });
+  assert.equal(blank.question.type, 'blank'); assert.equal(blank.question.fields.length, 1);
+});
+
+test('course roots use shared platform selectors, ignore old selection markers and never absorb unrelated forms', async () => {
+  for (const [host, className] of [['mooc1.chaoxing.com', 'TiMu'], ['studyh5.zhihuishu.com', 'questionWrap'], ['www.icourse163.org', 'u-questionItem']]) {
+    const blocks = [0, 1].map(index => new FakeElement({ classes: [className, ...(index ? ['question-box'] : [])], attrs: { id: `course-${index}`, 'data-quizmate-course-question': 'selected' }, text: index ? '单选题：第二题' : '请选择正确答案', children: [radio('A. 甲'), radio('B. 乙')] }));
+    const body = new FakeElement({ tag: 'body', children: [new FakeElement({ tag: 'header', children: [new FakeElement({ tag: 'input', attrs: { type: 'text' } })] }), ...blocks] });
+    const first = await readPage(body, `https://${host}/learn`, { coursePlatforms: COURSE_PLATFORMS });
+    assert.equal(first.ok, true, `${host}: ${first.error}`); assert.equal(first.pageQuestions.keys.length, 2);
+    assert.equal(first.question.type, 'single'); assert.equal(first.question.options.length, 2);
+    assert.match(first.question.stem, /请选择正确答案/, 'mixed generic/platform roots must stay in DOM order');
+    const second = await readPage(body, `https://${host}/learn`, { coursePlatforms: COURSE_PLATFORMS, questionKey: first.pageQuestions.keys[1] });
+    assert.equal(second.ok, true, second.error); assert.notEqual(first.question.questionId, second.question.questionId);
+    const unknown = await readPage(body, 'https://unrelated.example/learn', { coursePlatforms: COURSE_PLATFORMS });
+    assert.equal(unknown.ok, true, 'ordinary sites may still expose an explicit generic question');
+    assert.equal(unknown.pageQuestions, null, 'platform-only roots must not be included on ordinary sites');
+    assert.match(unknown.question.stem, /第二题/);
+  }
+});
+
+
+test('Moodle assignment instructions are recognized without an editor and stay preview-only', async () => {
+  const intro = new FakeElement({ tag: 'section', attrs: { id: 'intro' }, text: '大作业说明\n学生答题不能复制粘贴，不能以附件形式提交。论述严谨，理论联系实际，字数不少于1,000字。\n大作业：如何完善创新机制？' });
+  const stale = new FakeElement({ tag: 'div', classes: ['question-container'], text: '判断题：旧题', children: [radio('对'), radio('错')] });
+  const body = new FakeElement({ tag: 'body', text: 'PRIVATE NAVIGATION', children: [stale, intro, editor(), button('添加作业'), button('提交作业')] });
+  const url = 'https://moodle.syxy.ouchn.cn/mod/assign/view.php?id=101';
+  const result = await readPage(body, url);
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.question.type, 'text');
+  assert.equal(result.question.assignment.draftOnly, true);
+  assert.equal(result.question.assignment.minimumCharacters, 1000);
+  assert.match(result.question.assignment.guidance, /禁止复制粘贴/);
+  assert.equal(result.question.title, '大作业：如何完善创新机制？');
+  assert.equal(result.question.fields[0].id, 'assignment-draft');
+  assert.doesNotMatch(result.question.stem, /PRIVATE|旧题/);
+  assert.equal(result.run.available, false);
+  assert.equal(result.pageQuestions, null);
+  const other = await readPage(body, url.replace('101', '102'));
+  assert.notEqual(other.question.questionId, result.question.questionId, 'different assignments with equal text have independent identities');
+  await readPage(body, url);
+  for (const action of ['fill', 'fillStep', 'run', 'next']) {
+    const blocked = await pageAction(action, { questionId: result.question.questionId, allowBackground: true });
+    assert.equal(blocked.ok, false); assert.match(blocked.error, /人工录入和提交/);
+  }
+  assert.equal(body.children.at(-1).events, undefined);
+});
+
+test('assignment recognition fails closed without a valid intro/id and does not treat ordinary forms as assignments', async () => {
+  const intro = new FakeElement({ attrs: { id: 'intro' }, text: '大作业说明\n请结合材料说明问题。' });
+  const body = new FakeElement({ tag: 'body', children: [intro] });
+  const url = 'https://moodle.syxy.ouchn.cn/mod/assign/view.php';
+  assert.equal((await readPage(body, url)).ok, false);
+  assert.equal((await readPage(body, url + '?id=not-id')).ok, false);
+  assert.equal((await readPage(new FakeElement({ tag: 'body' }), url + '?id=123')).ok, false);
+  assert.equal((await readPage(body, 'https://example.com/contact?id=123')).ok, false);
+  const noLimit = await readPage(body, url + '?id=123');
+  assert.equal(noLimit.ok, true, noLimit.error);
+  assert.equal(noLimit.question.assignment.minimumCharacters, null);
 });

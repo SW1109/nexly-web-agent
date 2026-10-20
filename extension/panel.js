@@ -1,3 +1,4 @@
+import { CLI_PROGRESS_LABELS } from './lib/contracts.js';
 import { PROJECT, DATA_CONSENT_VERSION } from './lib/project-info.js';
 import { DEFAULT_PACING, PACING_FIELDS, validatePacing } from './lib/pacing.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, OPACITY, validateAppearance } from './lib/appearance.js';
@@ -43,7 +44,7 @@ function showAppearance(appearance) {
 }
 function updateSummary() {
   $('provider-summary').textContent = $('connection-mode').value === 'api' ? `API · ${apiForm.summary}` : names[$('provider').value];
-  $('task-summary').textContent = `每批 ${$('count').value} 题`;
+  $('task-summary').textContent = currentState?.question?.assignment?.draftOnly ? '单份草稿 · 不自动提交' : currentState?.pageQuestions?.keys.length > 1 ? `当前页 ${currentState.pageQuestions.keys.length} 题` : `每批 ${$('count').value} 题`;
 }
 function validateInput(input, message) {
   input.setCustomValidity('');
@@ -106,6 +107,7 @@ async function command(action, data = {}) {
 }
 function render(state) {
   currentState = state;
+  updateSummary();
   showError(state.error);
   const busy = state.busy || localBusy || apiBusy || settingsSaving || Boolean(coursePanel?.busy);
   for (const id of ['read', 'solve', 'auto', 'fill', 'run', 'provider', 'count', 'permission', 'run-after-fill', 'background-run', 'page-controls', 'reset-settings', 'typewriter', 'auto-controls', 'connection-mode', 'controls-opacity', 'reset-position', 'retry-page']) $(id).disabled = busy;
@@ -123,21 +125,28 @@ function render(state) {
   $('pause').disabled = !state.busy || Boolean(state.operation) || localBusy;
   $('stop').disabled = localOperation?.action === 'stop' || (!state.busy && !localBusy);
   const action = localOperation?.action || state.operation;
-  const status = operationLabels[action] || `${phases[state.phase] || state.phase}${state.phase === 'solving' ? ` · ${state.elapsedSeconds || 0} 秒` : ''}${state.typingProgress ? ` · ${state.typingProgress.written}/${state.typingProgress.total}` : ''}${state.completed ? ` · 已填写 ${state.completed} 题` : ''}`;
+  const status = operationLabels[action] || `${phases[state.phase] || state.phase}${state.phase === 'solving' ? ` · ${state.elapsedSeconds || 0} 秒${CLI_PROGRESS_LABELS[state.cliStage] ? ` · ${CLI_PROGRESS_LABELS[state.cliStage]}` : ''}` : ''}${state.typingProgress ? ` · ${state.typingProgress.written}/${state.typingProgress.total}` : ''}${state.completed ? ` · 已填写 ${state.completed} 题` : ''}`;
   $('task-status').textContent = status;
   $('task-status').dataset.busy = String(Boolean(state.busy || localBusy));
   const reading = action === 'read' || action === 'enableControls' || state.phase === 'reading' && state.busy;
   $('read').textContent = reading ? '正在读取…' : '重新读取 ↻';
   $('read').setAttribute('aria-busy', String(Boolean(reading)));
   document.querySelector('.question-section').setAttribute('aria-busy', String(Boolean(reading)));
+  const draftOnly = state.question?.assignment?.draftOnly === true;
+  $('auto').textContent = draftOnly ? '生成作业参考草稿' : '开始答题 →';
+  $('solve').textContent = draftOnly ? '仅预览草稿' : '仅预览答案';
+  $('practice-hint').textContent = draftOnly ? state.question.assignment.guidance : '置信度达到 80% 后自动填写，最终提交由你操作。';
+  $('answer-title').textContent = draftOnly ? '作业参考草稿' : '答案预览';
+  $('fill').hidden = draftOnly;
+  $('fill').disabled ||= draftOnly;
   $('empty').hidden = Boolean(state.question);
   $('question').hidden = !state.question;
   if (state.question) {
-    $('question-type').textContent = types[state.question.type];
+    $('question-type').textContent = draftOnly ? '大作业 · 人工提交' : types[state.question.type];
     $('question-site').textContent = new URL(state.question.pageUrl).hostname;
     $('question-name').textContent = state.question.title;
     $('question-body').textContent = state.question.stem;
-    $('editor-status').textContent = state.question.type === 'code' ? `${state.question.language || '语言未识别'} · ${state.editor?.supported ? `编辑器：${state.editor.kind}` : state.editor?.error || '编辑器待适配'}` : '';
+    $('editor-status').textContent = draftOnly ? `${state.question.assignment.minimumCharacters ? `题面要求不少于 ${state.question.assignment.minimumCharacters} 字。` : ''}${state.question.assignment.guidance}` : state.question.type === 'code' ? `${state.question.language || '语言未识别'} · ${state.editor?.supported ? `编辑器：${state.editor.kind}` : state.editor?.error || '编辑器待适配'}` : '';
   }
   $('answer-section').hidden = !state.answer;
   $('fill').disabled ||= !state.answer;
@@ -153,10 +162,13 @@ function render(state) {
     : '点击页面执行入口并等待新结果';
   if (state.answer) {
     const answer = state.answer;
+    const draftCharacters = draftOnly ? Array.from(answer.fills[0]?.value.replace(/\s/g, '') || '').length : 0;
+    const minimum = state.question?.assignment?.minimumCharacters;
+    const draftLengthWarning = minimum && draftCharacters < minimum ? `低于题面 ${minimum} 字要求，请补充并按平台计数复核。` : '';
     $('confidence').textContent = `${Math.round(answer.confidence * 100)}% 置信度`;
     $('answer-body').textContent = answer.code || answer.choiceIds.map((id) => { const option = state.question.options.find((item) => item.id === id); return `${option?.label || id} · ${option?.text || ''}`; }).join('\n') || answer.fills.map((item) => `${state.question.fields.find((field) => field.id === item.fieldId)?.label || item.fieldId}：${item.value}`).join('\n');
     $('explanation').textContent = answer.explanation;
-    $('fill-status').textContent = state.phase === 'filled' ? '已填写并回读核对，尚未提交。'
+    $('fill-status').textContent = draftOnly ? `参考草稿约 ${draftCharacters} 字符（不含空白）。${draftLengthWarning}请核对字数、事实与论述后按平台规则人工录入；未填写、保存或提交。` : state.phase === 'filled' ? '已填写并回读核对，尚未提交。'
       : state.phase === 'awaitingManual' ? '已填写，等待你手动提交代码并切换下一题；切题后继续求解。'
       : state.paused ? (state.pauseReason === 'inactive' ? '等待回到原练习页，返回后自动继续填写。' : '已手动暂停，点击“继续”后填写。')
       : state.error ? `未完成填写：${state.error}`

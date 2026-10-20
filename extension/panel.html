@@ -55,7 +55,7 @@
     <div class="button-row"><button id="auto" class="primary" type="button">开始答题 <span aria-hidden="true">→</span></button><button id="solve" class="secondary" type="button">仅预览答案</button></div>
     <div id="task-controls" class="button-row" hidden><button id="pause" class="secondary" type="button">暂停</button><button id="stop" class="danger" type="button">停止任务</button></div>
     <p id="task-status" class="task-status" aria-live="polite">准备就绪</p>
-    <p class="caption">置信度达到 80% 后自动填写，最终提交由你操作。</p>
+    <p id="practice-hint" class="caption">置信度达到 80% 后自动填写，最终提交由你操作。</p>
   </section>
   <section id="answer-section" class="section" aria-labelledby="answer-title" hidden>
     <div class="section-heading"><h2 id="answer-title">答案预览</h2><span id="confidence" class="badge"></span></div><pre id="answer-body" class="preview answer"></pre><p id="explanation" class="muted"></p><p id="fill-status" class="caption" aria-live="polite"></p><div class="button-row"><button id="fill" class="secondary" type="button">填入此答案</button><button id="run" class="quiet" type="button">执行样例</button></div>
@@ -82,8 +82,8 @@
     </section>
     <section id="course-quiz" class="section" aria-labelledby="course-quiz-heading" hidden>
       <div class="section-heading"><h2 id="course-quiz-heading">随堂练习</h2><button id="course-show-answer" class="quiet" type="button">查看答案 →</button></div>
-      <label for="course-question">选择当前题目</label><select id="course-question" aria-describedby="course-ai-hint"></select>
-      <div class="button-row"><button id="course-preview" class="secondary" type="button">仅预览本题</button><button id="course-fill" class="primary" type="button">解题并填写本题</button></div>
+      <p id="course-question-count" class="caption" aria-live="polite"></p>
+      <div class="button-row"><button id="course-preview" class="secondary" type="button">仅预览答案</button><button id="course-fill" class="primary" type="button">解题并填写</button></div>
       <p id="course-ai-hint" class="caption"></p>
     </section>
     <section class="section directory-section" aria-labelledby="course-directory-heading">

@@ -62,17 +62,13 @@ export function createCoursePanel({ onPractice, onChange = () => {}, onInvalid =
     $('course-directory-empty').hidden = chapters.length > 0;
     filterChapters();
     $('course-locate').disabled = !chapters.some((item) => item.current);
-    const questions = snapshot?.questions || [], questionSignature = JSON.stringify(questions);
+    const questions = snapshot?.questions || [], multiple = questions.length > 1;
     $('course-quiz').hidden = !questions.length;
-    if ($('course-question').dataset.signature !== questionSignature) {
-      $('course-question').dataset.signature = questionSignature;
-      const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = questions.length === 1 ? '当前只有一道题，可直接预览' : '请选择要解答的题目';
-      const options = questions.map((question) => { const option = document.createElement('option'); option.value = question.key; option.textContent = `${question.index + 1}. ${question.title}`; option.selected = question.selected; return option; });
-      $('course-question').replaceChildren(placeholder, ...options);
-    }
-    $('course-question').disabled = active || practiceBusy;
+    $('course-question-count').textContent = multiple ? `当前页共 ${questions.length} 道题，无需选择，将按页面顺序依次解答。` : '已识别当前题目，可直接预览或解答。';
+    $('course-preview').textContent = multiple ? '仅预览首题' : '仅预览答案';
+    $('course-fill').textContent = multiple ? '解题并填写本页' : '解题并填写';
     for (const id of ['course-preview', 'course-fill']) $(id).disabled = active || practiceBusy || !accepted;
-    $('course-ai-hint').textContent = !accepted ? '先到练习区阅读并同意 AI 数据使用说明。' : practiceBusy ? 'AI 任务运行中，请到练习区查看；提交与交卷始终由你确认。' : '只处理选中的本题；题目发送给你配置的 AI，置信度达标才填写，不会自动提交。';
+    $('course-ai-hint').textContent = !accepted ? '先到练习区阅读并同意 AI 数据使用说明。' : practiceBusy ? 'AI 任务运行中，请到练习区查看；提交与交卷始终由你确认。' : '题目逐题发送给你配置的 AI，置信度达标才填写；完成本页后停止，不翻页、不自动提交。';
     log(state.log || []);
     if (!pending) tell(state.error || failure);
   }
@@ -110,7 +106,6 @@ export function createCoursePanel({ onPractice, onChange = () => {}, onInvalid =
   $('course-preview').addEventListener('click', () => perform('previewQuiz'));
   $('course-fill').addEventListener('click', () => perform('fillQuiz'));
   $('course-show-answer').addEventListener('click', onPractice);
-  $('course-question').addEventListener('change', () => { if ($('course-question').value) void perform('chooseQuestion', { key: $('course-question').value }); });
   $('course-chapters').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-key]');
     if (button && !button.disabled) void perform('selectChapter', { key: button.dataset.key });

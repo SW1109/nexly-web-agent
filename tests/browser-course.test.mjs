@@ -30,9 +30,10 @@ function html(id, url) {
   const paging = layout === 'newgk' ? next.replaceAll('<a href=', '<a class="newgk-next" href=').replaceAll('下一页</a>', (current === 1 ? '视频教材：关于课程考试' : '继续本课程') + '</a>') : next;
   const directory = layout && !['custom','customExtra','standardExtra'].includes(layout) ? '' : id === 'chaoxing' ? links : `<ul class="${id === 'zhihuishu' ? 'videoList' : id === 'icourse' ? 'j-unitslist' : 'block_tree'}">${links}</ul>`;
   const questionClass = { chaoxing: 'TiMu', zhihuishu: 'questionWrap', icourse: 'u-questionItem', ouchn: 'que' }[id];
-  const body = current === 3 ? `<div class="${questionClass}"><h2>2 + 2 的结果是？</h2><label><input type="radio" name="answer" value="a">A. 3</label><label><input type="radio" name="answer" value="b">B. 4</label></div><button id="submit">提交答案</button>` : `<video width="320" height="180" preload="auto" muted src="/__fixture/clip.webm?chapter=${current}"></video>`;
+  const multipleQuiz = Array.from({length:4}, (_,index) => `${id==='ouchn' && index%2===0?'<div class="que description"><h2>题型说明</h2></div>':''}<div id="course-q${index}" class="${questionClass}${id==='ouchn'?(index<2?' multichoice':' truefalse'):''}" ${index%2===1?'data-quizmate-course-question="selected"':''}><div class="qtext">2 + 2 的结果是？</div><label><input type="radio" name="answer-${index}" value="a">A. 3</label><label><input type="radio" name="answer-${index}" value="b">B. 4</label></div>`).join('') + '<button id="previous" type="button" onclick="document.body.dataset.navs++">上一题</button><button id="next" type="button" onclick="document.body.dataset.navs++">下一题</button>';
+  const body = current === 3 ? `${layout==='multiQuiz'?multipleQuiz:`<div class="${questionClass}"><h2>2 + 2 的结果是？</h2><label><input type="radio" name="answer" value="a">A. 3</label><label><input type="radio" name="answer" value="b">B. 4</label></div>`}<button id="submit">提交答案</button>` : `<video width="320" height="180" preload="auto" muted src="/__fixture/clip.webm?chapter=${current}"></video>`;
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>模拟课程（非平台验收）</title><h1>模拟课程（非平台验收）</h1><div class="${layout && layout !== 'standardExtra' ? 'theme-outline' : 'block_navigation'}" id="catalog">${directory}</div>${paging}${layout.endsWith('Extra') ? '<aside><a href="/mod/page/view.php?id=199">正文推荐的其他资源</a></aside>' : ''}<main>${body}</main><script>
-  document.body.dataset.clicks='0';document.body.dataset.submits='0';
+  document.body.dataset.clicks='0';document.body.dataset.submits='0';document.body.dataset.navs='0';
   document.getElementById('submit')?.addEventListener('click',()=>document.body.dataset.submits=String(Number(document.body.dataset.submits)+1));
   if(${JSON.stringify(id)}!=='ouchn')document.getElementById('catalog').addEventListener('click',event=>{
     const anchor=event.target.closest('a[data-next]');if(!anchor)return;event.preventDefault();document.body.dataset.clicks=String(Number(document.body.dataset.clicks)+1);
@@ -116,8 +117,18 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
     assert.equal((await control('.launcher')).expanded,'true');
     point=await control('.actions button:first-child');assert.equal(point.disabled,false,JSON.stringify(point));await page.mouse.click(point.x,point.y);
     await waitForPhase('playing');
-    point=await control('.actions button:nth-child(2)');await page.mouse.click(point.x,point.y);
+    // 后台已进入 playing 时，页内开始命令的回包可能尚未到达，先等待真实暂停按钮恢复可用。
+    for(let attempt=0;attempt<100;attempt++) {
+      point=await control('.actions button:nth-child(2)');if(!point.disabled)break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.equal(point.disabled,false,JSON.stringify(point));await page.mouse.click(point.x,point.y);
     await waitForPhase('paused');assert.equal(await page.locator('video').evaluate(video=>video.paused),true);
+    for(let attempt=0;attempt<100;attempt++) {
+      point=await control('.actions button:first-child');if(!point.disabled)break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    assert.equal(point.disabled,false,JSON.stringify(point));
     await worker.evaluate(() => {
       globalThis.__courseSidebarEvents = [];
       globalThis.__courseSidebarOpened = (info) => globalThis.__courseSidebarEvents.push({ kind: 'opened', info });
@@ -126,6 +137,13 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
       chrome.sidePanel.onClosed.addListener(globalThis.__courseSidebarClosed);
     });
     try {
+      // 暂停反馈会改变组件高度；重新悬浮并等待展开，不能按折叠弹层的旧坐标点击。
+      point=await control('.launcher');await page.mouse.move(point.x,point.y);
+      for(let attempt=0;attempt<100;attempt++) {
+        if((await control('.popover')).opacity==='1')break;
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      assert.equal((await control('.launcher')).expanded,'true');
       point=await control('.open-panel');await page.mouse.click(point.x,point.y);
       for(let attempt=0;attempt<100;attempt++) {
         if(await worker.evaluate(() => globalThis.__courseSidebarEvents.some(event => event.kind === 'opened'))) break;
@@ -274,8 +292,8 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
   // SPA 连续换章：真实视频结束两次后停在随堂练习，不点击提交。
   await open('chaoxing');assert.equal((await command('start')).ok, true);
   let course = await waitForPhase('awaitingQuiz');assert.equal(course.watched, 2);assert.equal(await page.getAttribute('body', 'data-clicks'), '2');
-  let result = await command('chooseQuestion', { key: course.snapshot.questions[0].key });assert.equal(result.ok, true, result.error);
-  // 复用真正的页面解题解析与回填逻辑，无单选题 marker 也只操作明确选中的课程题块。
+  let result;
+  // 复用真正的页面解题解析与回填逻辑，无单选题 marker 也无需手动选题。
   const tabId = course.tabId;
   await worker.evaluate(async (origin) => {
     await chrome.storage.local.set({connectionMode:'api',dataConsentVersion:1,pacing:{answerDelayMs:0,actionIntervalMs:0,typingIntervalMs:0,typewriter:false},apiConfig:{baseUrl:origin+'/v1',protocol:'chat',model:'course-fixture',timeoutSeconds:15}});
@@ -302,7 +320,7 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
   await page.evaluate(()=>document.querySelector('input[value=b]').checked=false);
   async function exercise(action, payload = {}) {
     const handle = await worker.evaluateHandle('('+pageAction.toString()+')');
-    try { return await worker.evaluate(async ({ tabId, action, payload, func }) => { const [entry] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: [action, payload] }); return entry.result; }, { tabId, action, payload, func: handle }); }
+    try { return await worker.evaluate(async ({ tabId, action, payload, func }) => { const [entry] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func, args: [action, payload] }); return entry.result; }, { tabId, action, payload: { ...payload, coursePlatforms: COURSE_PLATFORMS }, func: handle }); }
     finally { await handle.dispose(); }
   }
   let read = await exercise('read');assert.equal(read.ok, true, read.error);
@@ -313,15 +331,44 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
   await open('ouchn');assert.equal((await command('start')).ok, true);
   course = await waitForPhase('awaitingQuiz');assert.equal(course.snapshot.platformId, 'ouchn');assert.equal(course.watched, 2);
   assert.match(page.url(), /quiz\/attempt\.php/);assert.equal(await page.getAttribute('body', 'data-submits'), '0');
-  await command('chooseQuestion', { key: course.snapshot.questions[0].key });
   read = await exercise('read');assert.equal(read.ok, true, read.error);assert.equal(read.question.options.length, 2);
-  // 每个平台的题块选择器均回归；这只是模拟结构，不是登录后的真实课程验收。
+  // 每个平台的自动题块识别均回归；这只是模拟结构，不是登录后的真实课程验收。
   for (const id of ['zhihuishu', 'icourse']) {
     const course = await open(id, initial[id].replace('chapter=1', 'chapter=3'));
     assert.equal(course.snapshot.questions.length, 1);
-    assert.equal((await command('chooseQuestion', { key: course.snapshot.questions[0].key })).ok, true);
     read = await exercise('read');assert.equal(read.ok, true, `${id}: ${read.error}`);
   }
+  await t.test('course workspace fills every page question without a selection, including Moodle description blocks', async () => {
+    assert.equal(await panel.locator('#course-question').count(), 0, 'obsolete question dropdown must be removed');
+    for (const id of ['ouchn', 'chaoxing', 'zhihuishu', 'icourse']) {
+      const url = id === 'ouchn' ? 'https://moodle.syxy.ouchn.cn/mod/quiz/attempt.php?id=103&layout=multiQuiz' : initial[id].replace('chapter=1', 'chapter=3') + '&layout=multiQuiz';
+      const current = await open(id, url); let before = requests.length;
+      assert.equal(current.snapshot.questions.length, 4, id);
+      await panel.locator('#tab-course').click();
+      await panel.waitForFunction(() => document.getElementById('course-question-count').textContent.includes('4 道题'));
+      assert.equal(await panel.locator('#course-fill').textContent(), '解题并填写本页');
+      assert.equal(await panel.locator('#course-preview').textContent(), '仅预览首题');
+      if (id === 'ouchn') {
+        await panel.locator('#course-preview').click();
+        for (let attempt = 0; attempt < 200 && requests.length === before; attempt++) await new Promise(resolve => setTimeout(resolve, 25));
+        assert.ok(requests.length > before, 'first-question preview did not start'); await waitForTask('ready');
+        assert.equal(requests.length, before + 1); assert.equal(await page.locator('input:checked').count(), 0, 'preview must not write any answer');
+        assert.equal(requests.at(-1).questionId.includes('#'), true);
+        before = requests.length; await panel.locator('#tab-course').click();
+      }
+      await panel.locator('#course-fill').click();
+      // 等本次请求实际发出，避免上一平台的 filled 状态让轮询提前结束。
+      for (let attempt = 0; attempt < 200 && requests.length === before; attempt++) await new Promise(resolve => setTimeout(resolve, 25));
+      assert.ok(requests.length > before, `${id}: current-page task did not start`);
+      const task = await waitForTask('filled'); assert.equal(task.completed, 4, id);
+      assert.equal(await page.locator('input[value=b]:checked').count(), 4, id);
+      assert.equal(await page.getAttribute('body','data-submits'), '0');
+      assert.equal(await page.getAttribute('body','data-navs'), '0'); assert.equal(await page.getAttribute('body','data-clicks'), '0');
+      const calls = requests.slice(before); assert.equal(calls.length, 4, id);
+      assert.equal(new Set(calls.map(item => item.questionId)).size, 4); assert.ok(calls.every(item => item.options.length === 2));
+      assert.ok(!JSON.stringify(calls).includes('题型说明'));
+    }
+  });
   await open('chaoxing');await command('start');await command('pause');
   assert.equal(await page.locator('video').evaluate(video => video.paused), true);
   await command('start');await command('stop');assert.equal(await page.locator('video').evaluate(video => video.paused), true);

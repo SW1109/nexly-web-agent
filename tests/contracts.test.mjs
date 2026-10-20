@@ -84,3 +84,16 @@ test('code execution feedback survives both validation passes as bounded untrust
   for (const patch of [{ code: '' }, { code: 'x'.repeat(LIMITS.code + 1) }, { result: '' }, { result: 'x'.repeat(LIMITS.executionResult + 1) }]) assert.throws(() => validateQuestion({ ...codeQuestion, executionFeedback: { ...feedback, ...patch } }), /长度/);
   assert.throws(() => validateQuestion({ ...codeQuestion, starterCode: 'a'.repeat(LIMITS.code), executionFeedback: { ...feedback, code: 'b'.repeat(LIMITS.code) } }), /传输范围/);
 });
+
+
+test('assignment metadata remains preview-only through validation and permits long reviewable drafts', () => {
+  const raw = { ...single, type: 'text', options: [], fields: [{ id: 'assignment-draft', label: '参考草稿' }], assignment: { draftOnly: true, minimumCharacters: 1000, guidance: '请人工录入并提交', cookie: 'private' } };
+  const question = validateQuestion(raw);
+  assert.deepEqual(validateQuestion(question), question);
+  assert.equal(question.assignment.cookie, undefined);
+  assert.match(buildPrompt(question), /完整参考草稿/);
+  assert.equal(validateAnswer({ ...correct, type: 'text', choiceIds: [], fills: [{ fieldId: 'assignment-draft', value: '学习参考'.repeat(400) }] }, question).fills[0].value.length, 1600);
+  for (const minimumCharacters of [0, -1, 1.2, '1000', undefined, LIMITS.question + 1]) assert.throws(() => validateQuestion({ ...raw, assignment: { ...raw.assignment, minimumCharacters } }), /字数/);
+  assert.throws(() => validateQuestion({ ...raw, assignment: { ...raw.assignment, draftOnly: false } }), /契约/);
+  assert.throws(() => validateQuestion({ ...single, assignment: raw.assignment }), /契约/);
+});

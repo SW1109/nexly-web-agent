@@ -106,7 +106,7 @@ export async function coursePageAction(action, payload) {
     };
     const publicChapter = ({ node, anchor, raw, href, ...item }) => item;
     const questionNodes = () => {
-      const candidates = all(platform.questions);
+      const candidates = all(platform.questions).filter((node) => !node.matches('.que.description'));
       return candidates.filter((node) => !candidates.some((other) => node !== other && node.contains(other))).slice(0, 100);
     };
     const read = () => {
@@ -116,13 +116,12 @@ export async function coursePageAction(action, payload) {
       const video = videos.length === 1 ? videos[0] : null;
       const duration = Number.isFinite(video?.duration) ? Math.max(0, video.duration) : 0;
       const currentTime = Number.isFinite(video?.currentTime) ? Math.max(0, video.currentTime) : 0;
-      const selected = questions.find((node) => node.getAttribute('data-quizmate-course-question') === 'selected');
       const pageUrl = new URL(location.href); pageUrl.search = ''; pageUrl.hash = '';
       return {
         ok: true, platformId: platform.id, title: text(all(platform.titles)[0]).slice(0, 180) || document.title.slice(0, 180), pageUrl: pageUrl.href,
         gate: gate(), shown: inFrame(), children: [...document.querySelectorAll('iframe,frame')].map((node) => ({ url: node.src, shown: visible(node) })),
         chapters: chapters.map(publicChapter), pageResource, nextChapter: nextChapter() ? publicChapter(nextChapter()) : null,
-        questions: questions.map((node, index) => ({ key: `question-${hash(`${index}|${text(node).slice(0, 800)}`)}`, title: text(node).slice(0, 140), index, selected: node === selected })),
+        questions: questions.map((node, index) => ({ key: `question-${hash(`${index}|${text(node).slice(0, 800)}`)}`, title: text(node).slice(0, 140), index })),
         media: { count: videos.length, id: video ? identity(video) : '', signature: video ? `${identity(video)}|${hash(video.currentSrc || video.getAttribute('src') || '')}` : '', duration, currentTime, paused: video?.paused ?? true, ended: Boolean(video?.ended && duration > 0 && currentTime >= duration - 1), ready: Boolean(video && video.readyState >= 2 && duration > 0), rate: Number.isFinite(video?.playbackRate) ? video.playbackRate : 1 }
       };
     };
@@ -136,14 +135,6 @@ export async function coursePageAction(action, payload) {
     };
     if (action === 'read') return read();
     if (action === 'stop') { release(payload.pause !== false); return { ok: true }; }
-    if (action === 'chooseQuestion') {
-      if (gate()) throw new Error(gate());
-      const nodes = questionNodes(), node = nodes.find((entry, index) => `question-${hash(`${index}|${text(entry).slice(0, 800)}`)}` === payload.key);
-      if (!node) throw new Error('题目已变化，请刷新课程后重新选择');
-      for (const entry of nodes) entry.removeAttribute('data-quizmate-course-question');
-      node.setAttribute('data-quizmate-course-question', 'selected');
-      return read();
-    }
     if (action === 'selectChapter') {
       if (gate()) throw new Error(gate());
       const chapter = chapterList().find((item) => item.key === payload.key) || (nextChapter()?.key === payload.key ? nextChapter() : null);

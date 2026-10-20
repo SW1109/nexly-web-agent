@@ -4,7 +4,7 @@ import { access, readFile, stat, mkdtemp, writeFile, rm, readdir } from 'node:fs
 import { constants } from 'node:fs';
 import { homedir, tmpdir, platform } from 'node:os';
 import { join, dirname, resolve, isAbsolute, delimiter, extname } from 'node:path';
-import { PROVIDERS, ANSWER_SCHEMA, buildPrompt, parseAnswer, validateQuestion } from '../extension/lib/contracts.js';
+import { PROVIDERS, CLI_TIMEOUT_MS, CLI_PROGRESS_LABELS, ANSWER_SCHEMA, buildPrompt, parseAnswer, validateQuestion } from '../extension/lib/contracts.js';
 
 export const CONFIG_PATH = join(homedir(), '.nexly-web-agent', 'config.json');
 const SECRET_ENV = /^(?:ANTHROPIC_(?:API_KEY|AUTH_TOKEN|BASE_URL|MODEL|DEFAULT_.*_MODEL)|OPENAI_(?:API_KEY|BASE_URL)|GEMINI_(?:API_KEY|API_BASE_URL|BASE_URL|MODEL)|GOOGLE_(?:API_KEY|GEMINI_BASE_URL))$/;
@@ -25,6 +25,7 @@ export function cliFailure(code, stderr, stdout) {
   if (/403|forbidden/i.test(output)) return 'CLI 服务拒绝访问，请检查当前源的模型权限';
   if (/must specify.*(?:API_KEY|token)|not logged in|login required/i.test(output)) return 'CLI 尚未完成登录或当前凭据未生效，请先在终端完成配置';
   if (/not running in a trusted directory/i.test(output)) return 'CLI 拒绝在当前工作目录运行，请检查 CLI 信任配置与版本';
+  if (/CERT_|certificate|self.signed|unable to verify|TLS.*(?:fail|error)/i.test(output)) return 'CLI TLS 证书校验失败，请检查 Node 的受信任证书与代理配置；不要关闭证书校验';
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|fetch failed|Failed to connect|connection.*error/i.test(output)) return 'CLI 无法连接当前供应商，请检查源地址、代理和网络';
   if (/invalid transport|Error loading config|unknown option|unexpected argument/i.test(output)) return 'CLI 配置或参数与当前版本不兼容，请运行 doctor 并检查 CLI 版本';
   // 不把原始 stderr 回传给扩展：部分 CLI 会把整段题干、系统提示甚至本地上下文写进去。
@@ -145,7 +146,7 @@ function windowsProcessTree(child) {
     killer.once('close', (code) => finish(code !== 0));
   });
 }
-export async function runProcess(command, args, { cwd, stdin = '', signal, timeoutMs = 180000, env = childEnvironment(), maxBytes = 2 * 1024 * 1024 } = {}) {
+export async function runProcess(command, args, { cwd, stdin = '', signal, timeoutMs = CLI_TIMEOUT_MS, timeoutMessage, onStdout = () => {}, onStderr = () => {}, env = childEnvironment(), maxBytes = 2 * 1024 * 1024 } = {}) {
   if (signal?.aborted) throw new Error('任务已停止');
   const executable = await processCommand(command, args);
   return new Promise((resolveResult, reject) => {
@@ -164,12 +165,12 @@ export async function runProcess(command, args, { cwd, stdin = '', signal, timeo
       const kill = (sig) => { try { process.kill(-child.pid, sig); } catch {} };
       kill('SIGTERM'); killTimer = setTimeout(() => kill('SIGKILL'), 1500); killTimer.unref();
     };
-    const timer = setTimeout(() => terminate('CLI 请求超时，任务已停止'), timeoutMs);
+    const timer = setTimeout(() => terminate(timeoutMessage?.() || 'CLI 请求超时，任务已停止'), timeoutMs);
     const onAbort = () => terminate('任务已停止'); signal?.addEventListener('abort', onAbort, { once: true });
     const cleanup = () => { finished = true; clearTimeout(timer); clearTimeout(killTimer); signal?.removeEventListener('abort', onAbort); };
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { bytes += Buffer.byteLength(chunk); if (bytes > maxBytes) terminate('CLI 输出超过处理范围'); else stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { bytes += Buffer.byteLength(chunk); if (bytes > maxBytes) terminate('CLI 输出超过处理范围'); else stderr = (stderr + chunk).slice(-16000); });
+    child.stdout.on('data', (chunk) => { bytes += Buffer.byteLength(chunk); if (bytes > maxBytes) terminate('CLI 输出超过处理范围'); else { stdout += chunk; onStdout(chunk); } });
+    child.stderr.on('data', (chunk) => { bytes += Buffer.byteLength(chunk); if (bytes > maxBytes) terminate('CLI 输出超过处理范围'); else { stderr = (stderr + chunk).slice(-16000); onStderr(chunk); } });
     child.stdin.on('error', () => {});
     child.on('error', () => { cleanup(); reject(new Error('无法启动 CLI，请检查命令路径与运行权限')); });
     child.on('close', async (code) => { await terminationPromise; cleanup(); if (terminationReason) reject(new Error(terminationReason)); else if (code !== 0) reject(new Error(cliFailure(code, stderr, stdout))); else resolveResult({ stdout, stderr }); });
@@ -184,7 +185,7 @@ export function codexArguments(schemaPath, outputPath) {
   return ['exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '--disable', 'shell_tool', '--disable', 'plugins', '--disable', 'js_repl', '-c', 'web_search="disabled"', '-c', 'mcp_servers={}', '--output-schema', schemaPath, '--output-last-message', outputPath, '--color', 'never', '-'];
 }
 export function geminiArguments(policyPath) {
-  return ['--prompt', '', '--output-format', 'json', '--approval-mode', 'default', '--admin-policy', policyPath, '--extensions', 'none'];
+  return ['--prompt', '仅按标准输入的 JSON 契约回答，不调用任何工具。', '--output-format', 'stream-json', '--approval-mode', 'default', '--allowed-mcp-server-names', '__nexly_no_mcp__', '--admin-policy', policyPath, '--extensions', 'none'];
 }
 export function qwenArguments() {
   // 非空但不匹配任何真实工具的白名单，避免空列表被 CLI 解释成“启用默认工具”。
@@ -193,11 +194,48 @@ export function qwenArguments() {
 export function kimiArguments(agentPath, mcpPath, skillsPath) {
   return ['--print', '--output-format', 'text', '--final-message-only', '--agent-file', agentPath, '--mcp-config-file', mcpPath, '--skills-dir', skillsPath];
 }
+// Gemini 的事件流只在本地解析：向浏览器发送固定阶段，不转发题干、回答片段或原始 stderr。
+export function createGeminiStream(onStatus = () => {}) {
+  let pending = '', content = '', result = null, malformed = false, stage = 'starting', model = '', reportedModel = '';
+  // token 分片可能高频到达；仅阶段/模型变更即时上报，进度心跳仍保持两秒一次。
+  const update = (next) => { if (stage === next && model === reportedModel) return; stage = next; reportedModel = model; onStatus({ stage, ...(model ? { model } : {}) }); };
+  const line = (source) => {
+    if (!source.trim()) return;
+    let event;
+    try { event = JSON.parse(source); } catch { malformed = true; return; }
+    if (event?.type === 'init') {
+      model = typeof event.model === 'string' && /^[a-zA-Z0-9_./:-]{1,100}$/.test(event.model) ? event.model : '';
+      update('waiting');
+    } else if (event?.type === 'message' && event.role === 'assistant' && typeof event.content === 'string') {
+      content = event.delta === true ? content + event.content : event.content;
+      update('receiving');
+    } else if (event?.type === 'result') { result = event; update('finishing'); }
+  };
+  return {
+    get stage() { return stage; },
+    feed(chunk) {
+      pending += chunk;
+      let index;
+      while ((index = pending.indexOf('\n')) >= 0) { line(pending.slice(0, index)); pending = pending.slice(index + 1); }
+    },
+    diagnose(chunk) { if (/429|Too Many Requests|retrying|retry attempt|backoff/i.test(chunk)) update('retrying'); },
+    finish() {
+      if (pending.trim()) { line(pending); pending = ''; }
+      if (malformed || !result) throw new Error('Gemini CLI 事件流不完整，未收到最终结果，不会使用部分回答');
+      if (result.status !== 'success' || result.error) throw new Error(cliFailure('error', String(result.error?.message || result.error || ''), ''));
+      if (!content.trim()) throw new Error('Gemini CLI 未返回答案内容，请检查当前源与模型的非交互调用支持');
+      return content;
+    }
+  };
+}
 export function decodeCliResult(provider, stdout, savedOutput, question) {
   if (provider === 'codex') return parseAnswer(savedOutput, question);
   if (provider === 'kimi') return parseAnswer(stdout, question);
   let envelope;
-  try { envelope = JSON.parse(stdout.trim()); } catch { throw new Error(`${provider} CLI 未返回约定的 JSON 输出，请检查版本`); }
+  try { envelope = JSON.parse(stdout.trim()); } catch {
+    if (provider === 'gemini') { const stream = createGeminiStream(); stream.feed(stdout); return parseAnswer(stream.finish(), question); }
+    throw new Error(`${provider} CLI 未返回约定的 JSON 输出，请检查版本`);
+  }
   if (envelope.is_error || envelope.error) throw new Error(cliFailure('error', String(envelope.error?.message || envelope.result || ''), ''));
   const content = provider === 'claude' ? envelope.structured_output ?? envelope.result : provider === 'qwen' ? envelope.result ?? envelope.response : envelope.response;
   if (content == null) throw new Error('CLI 输出缺少答案，请检查 CLI 版本或供应商是否支持结构化输出');
@@ -211,7 +249,7 @@ export async function health() {
   }));
   return { hostVersion: '0.1.0', nodeVersion: process.version, providers, authenticationChecked: false, configPolicy: '每次任务启动新 CLI 进程；下一次请求读取 CLI 当前配置。' };
 }
-export async function solveWithCli(provider, rawQuestion, { signal, onProgress = () => {}, timeoutMs = 180000 } = {}) {
+export async function solveWithCli(provider, rawQuestion, { signal, onProgress = () => {}, timeoutMs = CLI_TIMEOUT_MS } = {}) {
   const question = validateQuestion(rawQuestion);
   const config = await readLocalConfig();
   const command = await resolveCommand(provider, config);
@@ -241,9 +279,14 @@ export async function solveWithCli(provider, rawQuestion, { signal, onProgress =
       await writeFile(mcpPath, '{"mcpServers":{}}', { mode: 0o600 });
     }
     const args = provider === 'codex' ? codexArguments(schemaPath, outputPath) : provider === 'claude' ? claudeArguments(ANSWER_SCHEMA) : provider === 'qwen' ? qwenArguments() : provider === 'kimi' ? kimiArguments(agentPath, mcpPath, cwd) : geminiArguments(policyPath);
-    onProgress({ provider, phase: 'running', elapsedSeconds: 0 });
-    const startedAt = Date.now(); heartbeat = setInterval(() => onProgress({ provider, phase: 'running', elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) }), 2000);
-    const { stdout } = await runProcess(command, args, { cwd, env, stdin: buildPrompt(question), signal, timeoutMs: Math.min(600000, Math.max(10000, timeoutMs)) });
+    const startedAt = Date.now(), deadlineMs = Math.min(600000, Math.max(10000, timeoutMs));
+    let status = provider === 'gemini' ? { stage: 'starting' } : {};
+    const progress = () => onProgress({ provider, phase: 'running', ...status, elapsedSeconds: Math.floor((Date.now() - startedAt) / 1000) });
+    const stream = provider === 'gemini' ? createGeminiStream((next) => { status = next; progress(); }) : null;
+    progress(); heartbeat = setInterval(progress, 2000);
+    const { stdout } = await runProcess(command, args, { cwd, env, stdin: buildPrompt(question), signal, timeoutMs: deadlineMs,
+      ...(stream ? { onStdout: (chunk) => stream.feed(chunk), onStderr: (chunk) => stream.diagnose(chunk),
+        timeoutMessage: () => `Gemini CLI 请求超时（${Math.round(deadlineMs / 1000)} 秒）：${CLI_PROGRESS_LABELS[stream.stage]}。任务已停止；请在终端用 -p 和 --output-format stream-json 核对同一源、同一模型的非交互请求，交互模式可用不代表此调用可用。` } : {}) });
     const saved = provider === 'codex' ? await readFile(outputPath, 'utf8').catch(() => '') : null;
     const answer = decodeCliResult(provider, stdout, saved, question);
     return { answer, provider, elapsedMs: Date.now() - startedAt, configMetadata: await configMetadata(provider) };

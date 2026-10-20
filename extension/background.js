@@ -1,5 +1,5 @@
 import { DATA_CONSENT_VERSION } from './lib/project-info.js';
-import { PROVIDERS, LIMITS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
+import { PROVIDERS, LIMITS, CLI_PROGRESS_LABELS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
 import { pageAction } from './lib/page.js';
 import { prepareSolver, solverHealth, apiProbe } from './lib/solver.js';
 import { connectionMode } from './lib/api-config.js';
@@ -10,10 +10,10 @@ import { navigationAction } from './lib/navigation.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, validateAppearance, validatePosition } from './lib/appearance.js';
 import { activePracticeTab } from './lib/tab-access.js';
 import { createCourseRuntime } from './lib/course-runtime.js';
-import { coursePlatform } from './lib/course-platforms.js';
+import { COURSE_PLATFORMS, coursePlatform } from './lib/course-platforms.js';
 import { coursePageAction } from './lib/course-page.js';
 
-const emptyState = () => ({ phase: 'idle', busy: false, operation: null, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', connectionMode: 'local', model: '', elapsedSeconds: 0 });
+const emptyState = () => ({ phase: 'idle', busy: false, operation: null, paused: false, pauseReason: null, autoFill: true, runInBackground: true, question: null, pageQuestions: null, answer: null, target: null, editor: null, run: null, controls: {}, typingProgress: null, log: [], error: '', completed: 0, provider: 'codex', connectionMode: 'local', model: '', elapsedSeconds: 0, cliStage: '' });
 let state = emptyState(), controller = null, operationEpoch = 0, controlsGeneration = 0;
 const probes = new Map();
 const reportedCommandErrors = new WeakSet();
@@ -238,9 +238,9 @@ async function pacedWait(task, milliseconds) {
 async function activeTab() {
   return activePracticeTab();
 }
-async function scan(tabId) {
+async function scan(tabId, preferred = null) {
   let results;
-  try { results = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, world: 'MAIN', func: pageAction, args: ['read'] }); }
+  try { results = await chrome.scripting.executeScript({ target: preferred?.questionKey ? { tabId, ...(preferred.documentId ? { documentIds: [preferred.documentId] } : { frameIds: [preferred.frameId] }) } : { tabId, allFrames: true }, world: 'MAIN', func: pageAction, args: ['read', { coursePlatforms: COURSE_PLATFORMS, ...(preferred?.questionKey ? { questionKey: preferred.questionKey } : {}) }] }); }
   catch { throw new Error('暂时无法读取练习页。请点击“授权本站”并允许访问，再重新获取；若已授权，请等待页面加载完成。'); }
   const frameResults = new Map(results.map((item) => [item.frameId, item.result?.frame]));
   const frames = [...frameResults.values()].some((frame) => frame?.children?.length) ? await chrome.webNavigation.getAllFrames({ tabId }) : [];
@@ -259,10 +259,16 @@ async function scan(tabId) {
   };
   const candidates = results.filter((item) => item.result?.ok && displayed(item.frameId));
   if (candidates.length > 1) throw new Error('多个活动 frame 同时包含题目，等待页面完成题目切换');
-  if (!candidates.length) throw new Error('未读到完整题目。可能是跨域 frame 未授权、页面未加载或首版尚不支持该结构。');
+  if (!candidates.length) {
+    if (preferred?.questionKey) throw Object.assign(new Error('当前页题块已变化或消失，已停止本页任务，请重新读取'), { code: 'PAGE_BATCH_CHANGED' });
+    const detail = results.filter((item) => displayed(item.frameId)).map((item) => item.result?.error).find((error) => /^作业说明/.test(error || ''));
+    if (detail) throw new Error(detail);
+    throw new Error('未读到完整题目。可能是跨域 frame 未授权、页面未加载或首版尚不支持该结构。');
+  }
   const match = candidates[0];
   const question = validateQuestion(match.result.question);
-  return { question, editor: match.result.editor, run: match.result.run || null, target: { tabId, frameId: match.frameId, documentId: match.documentId || null } };
+  const pageQuestions = match.result.pageQuestions || null;
+  return { question, pageQuestions, editor: match.result.editor, run: match.result.run || null, target: { tabId, frameId: match.frameId, documentId: match.documentId || null, ...(pageQuestions ? { questionKey: pageQuestions.currentKey } : {}) } };
 }
 async function readySnapshot(task, { afterId = null, requireEditor = true } = {}) {
   const deadline = Date.now() + 30000;
@@ -270,7 +276,10 @@ async function readySnapshot(task, { afterId = null, requireEditor = true } = {}
   while (Date.now() < deadline) {
     await gate(task);
     let snapshot = null;
-    try { snapshot = await scan(task.tabId); } catch (error) { lastError = error.message; }
+    try {
+      snapshot = await scan(task.tabId, task.pageBatch ? task.target : null);
+      if (task.pageBatch && snapshot.pageQuestions?.signature !== task.pageBatch.signature) throw Object.assign(new Error('当前页题目集合已变化，已停止本页任务，请重新读取'), { code: 'PAGE_BATCH_CHANGED' });
+    } catch (error) { if (error.code === 'PAGE_BATCH_CHANGED') throw error; lastError = error.message; }
     assertCurrent(task);
     if (snapshot && snapshot.question.questionId !== afterId && (!requireEditor || snapshot.question.type !== 'code' || snapshot.editor?.supported)) {
       const key = JSON.stringify([snapshot.question.questionId, snapshot.target, snapshot.editor?.binding, snapshot.question.starterCode]);
@@ -287,9 +296,9 @@ async function readySnapshot(task, { afterId = null, requireEditor = true } = {}
   }
   throw Object.assign(new Error(`页面加载未完成：${lastError}。未重复点击换题，也未创建或清空编辑器。`), { code: 'PAGE_NOT_READY' });
 }
-// 无数据的只读复查也传入空对象，避免 args 中的 undefined 被 Chrome 拒绝。
+// 无数据的只读复查也传入可序列化对象，避免 args 中的 undefined 被 Chrome 拒绝。
 async function act(target, action, payload = {}) {
-  const [result] = await chrome.scripting.executeScript({ target: { tabId: target.tabId, ...(target.documentId ? { documentIds: [target.documentId] } : { frameIds: [target.frameId] }) }, world: 'MAIN', func: pageAction, args: [action, payload] });
+  const [result] = await chrome.scripting.executeScript({ target: { tabId: target.tabId, ...(target.documentId ? { documentIds: [target.documentId] } : { frameIds: [target.frameId] }) }, world: 'MAIN', func: pageAction, args: [action, { ...payload, coursePlatforms: COURSE_PLATFORMS, ...(target.questionKey ? { questionKey: target.questionKey } : {}) }] });
   // 注入结果为空说明目标 frame/document 已经不存在（换题、刷新、iframe 重建），按题目变化处理而不是当作未知失败。
   if (!result) throw Object.assign(new Error('题目区域已切换或刷新，正在重新识别当前题'), { code: 'QUESTION_CHANGED' });
   if (!result.result?.ok) {
@@ -378,7 +387,11 @@ async function runSamples(task) {
 }
 async function requestAnswer(task, question, target) {
   const request = task.solver.solve(question, (progress) => {
-    if (controller === task && !task.stopped && !task.pendingSnapshot) void publish({ elapsedSeconds: progress.elapsedSeconds });
+    if (controller === task && !task.stopped && !task.pendingSnapshot) {
+      const stage = Object.hasOwn(CLI_PROGRESS_LABELS, progress.stage || '') ? progress.stage : '';
+      const changed = stage && stage !== state.cliStage;
+      void publish({ elapsedSeconds: progress.elapsedSeconds, cliStage: stage }, changed ? CLI_PROGRESS_LABELS[stage] : undefined);
+    }
   });
   task.request = request;
   let solved;
@@ -438,7 +451,9 @@ async function synchronizeQuestion(tabId) {
   if (capturedTask?.navigating || (capturedTask && !capturedTask.currentQuestionId)) return true;
   synchronizing = true;
   try {
-    const snapshot = await scan(tabId);
+    let snapshot;
+    try { snapshot = await scan(tabId, capturedTarget?.questionKey ? capturedTarget : null); }
+    catch (error) { if (!capturedTask?.manualBoundary) throw error; snapshot = await scan(tabId); }
     if (epoch !== operationEpoch || controller !== capturedTask || capturedTask?.navigating) return false;
     if (state.question !== capturedQuestion || state.target !== capturedTarget) return false;
     if (state.target?.tabId !== tabId) return;
@@ -457,6 +472,15 @@ async function synchronizeQuestion(tabId) {
   finally { synchronizing = false; }
 }
 async function nextQuestion(task, oldId, visited) {
+  if (task.pageBatch) {
+    // 同页队列只换读取作用域，不点击题目、翻页或课程导航；固定当前文档，不把新页面混入本批。
+    const batch = task.pageBatch;
+    batch.index++;
+    task.target = { ...batch.target, questionKey: batch.keys[batch.index] };
+    task.currentQuestionId = null;
+    await publish({ answer: null, typingProgress: null }, `继续当前页第 ${batch.index + 1}/${batch.keys.length} 题；不切换页面。`);
+    return;
+  }
   let currentId = oldId;
   task.navigating = true;
   try {
@@ -527,19 +551,27 @@ async function solveSequence(task, options) {
   const visited = new Set();
   let completed = 0, batchCompleted = 0, replacements = 0, skipped = 0, lastSkipReason = '';
   try {
-    while (batchCompleted < options.count) {
+    while (task.pageBatch || batchCompleted < options.count) {
       try {
         await gate(task);
         await publish({ phase: 'reading', answer: null, error: '', elapsedSeconds: 0, typingProgress: null }, '读取当前题…');
-        const snapshot = await readySnapshot(task, { requireEditor: options.fill }); assertCurrent(task);
+        let snapshot = await readySnapshot(task, { requireEditor: options.fill }); assertCurrent(task);
+        if (options.fill && !task.pageBatch && snapshot.pageQuestions?.keys.length > 1) {
+          const { keys, signature } = snapshot.pageQuestions;
+          task.pageBatch = { keys: [...keys], signature, target: snapshot.target, index: 0 };
+          task.target = { ...snapshot.target, questionKey: keys[0] };
+          snapshot = await readySnapshot(task, { requireEditor: options.fill }); assertCurrent(task);
+          await publish({}, `识别到当前页 ${keys.length} 道题，将逐题解答并回读，完成本页后停止，不查找下一题入口。`);
+        }
         task.target = snapshot.target; task.currentQuestionId = snapshot.question.questionId;
         await publish(snapshot, `已识别：${snapshot.question.title || snapshot.question.type}`);
         if (visited.has(snapshot.question.questionId)) throw new Error('已处理过当前题目，停止重复求解');
         await attachControls(snapshot.target); assertCurrent(task);
         if (snapshot.question.type === 'code' && !snapshot.editor.supported && options.fill) throw new Error(snapshot.editor.error);
         await gate(task);
-        await publish({ phase: 'solving' }, task.connectionMode === 'api' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
+        await publish({ phase: 'solving', cliStage: '' }, task.connectionMode === 'api' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
         const answer = await requestAnswer(task, snapshot.question, snapshot.target);
+        if (snapshot.question.assignment?.draftOnly) { await publish({ phase: 'ready', paused: false, pauseReason: null, autoFill: false }, snapshot.question.assignment.guidance); break; }
         if (!options.fill) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '仅预览模式：答案已返回，未填写网页。'); break; }
         if (answer.confidence < 0.8) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '置信度不足 80%，停止自动填写，请人工复核。'); break; }
         try { await fillWithDelay(task); }
@@ -552,7 +584,7 @@ async function solveSequence(task, options) {
           lastSkipReason = error.message;
           batchCompleted++;
           visited.add(snapshot.question.questionId);
-          const willAdvance = batchCompleted < options.count;
+          const willAdvance = task.pageBatch ? task.pageBatch.index + 1 < task.pageBatch.keys.length : batchCompleted < options.count;
           await publish({ completed, phase: 'filled', typingProgress: null }, willAdvance
             ? `未能写入当前题（${error.message}），已跳到下一题继续；本题未作答，请稍后人工核对。`
             : `未能写入当前题（${error.message}），本批已结束，本题未作答，请人工核对。`);
@@ -564,6 +596,7 @@ async function solveSequence(task, options) {
               await waitForManualQuestion(task);
             }
           }
+          if (task.pageBatch && !willAdvance) break;
           continue;
         }
         skipped = 0;
@@ -584,14 +617,16 @@ async function solveSequence(task, options) {
         }
         // 编程题无论通过或无法验证，都留给用户提交，绝不因日志缺失自动跳走。
         if (snapshot.question.type === 'code') await waitForManualQuestion(task);
-        if (batchCompleted < options.count) await nextQuestion(task, snapshot.question.questionId, visited);
+        const more = task.pageBatch ? task.pageBatch.index + 1 < task.pageBatch.keys.length : batchCompleted < options.count;
+        if (more) await nextQuestion(task, snapshot.question.questionId, visited);
+        else if (task.pageBatch) break;
       } catch (error) {
         if (controller !== task || task.stopped) throw error;
-        if (error.code === 'PAGE_NOT_READY') throw error;
+        if (error.code === 'PAGE_NOT_READY' || error.code === 'PAGE_BATCH_CHANGED' || task.pageBatch && !task.manualBoundary) throw error;
         const replacement = task.pendingSnapshot || await scan(task.tabId).catch(() => null);
         const isChanged = replacement && (task.pendingSnapshot || replacement.question.questionId !== task.currentQuestionId);
         if (!isChanged) throw error;
-        if (task.manualBoundary) { batchCompleted = 0; visited.clear(); replacements = 0; task.manualBoundary = false; }
+        if (task.manualBoundary) { batchCompleted = 0; visited.clear(); replacements = 0; task.manualBoundary = false; task.pageBatch = null; }
         else if (++replacements > 10) throw new Error('题目连续变化超过 10 次，已停止。请稳定页面后重新开始');
         if (task.request && !task.cancelWait) task.cancelWait = Promise.resolve(task.request.cancel()).catch(() => {});
         if (task.cancelWait) await task.cancelWait;
@@ -604,7 +639,7 @@ async function solveSequence(task, options) {
     if (controller === task) {
       // 一题都没写进去时明确报错，不能让“跳过”看起来像填写成功。
       if (completed === 0 && skipped > 0) await publish({ busy: false, operation: null, paused: false, pauseReason: null, phase: 'error', error: `本批没有题目写入成功（最后原因：${lastSkipReason}）` }, '本批没有题目写入成功，请人工核对页面选项控件是否可以点击。');
-      else await publish({ busy: false, operation: null, paused: false, pauseReason: null }, state.phase === 'filled' ? `已完成 ${completed} 题填写与回读核对，尚未提交。` : '');
+      else await publish({ busy: false, operation: null, paused: false, pauseReason: null }, state.phase === 'filled' ? task.pageBatch ? `当前页处理完成：已填写并回读 ${completed}/${task.pageBatch.keys.length} 题${batchCompleted > completed ? `，${batchCompleted - completed} 题未能写入，请人工核对` : ''}；未翻页、未提交。` : `已完成 ${completed} 题填写与回读核对，尚未提交。` : '');
     }
   } catch (error) {
     if (controller === task && !task.stopped) await publish({ busy: false, operation: null, paused: false, pauseReason: null, phase: 'error', error: error.message }, error.message);
@@ -697,7 +732,7 @@ async function handle(message, pageTarget = null, courseTabId = null) {
     const task = { id: crypto.randomUUID(), kind: message.action, tabId: null, target: null, paused: false, stopped: false, request: null, runInBackground: true };
     controller = task;
     operationEpoch++;
-    await publish({ busy: true, operation: message.action, paused: false, pauseReason: null, phase: 'reading', error: '' });
+    await publish({ busy: true, operation: message.action, paused: false, pauseReason: null, pageQuestions: null, phase: 'reading', error: '', question: null, answer: null, editor: null, run: null, target: null });
     try {
       const tab = await activeTab(); assertCurrent(task);
       task.tabId = tab.id;
@@ -723,6 +758,7 @@ async function handle(message, pageTarget = null, courseTabId = null) {
   }
   if (message.action === 'fill' || message.action === 'run') {
     if (!state.target) throw new Error('请先读取题目');
+    if (state.question?.assignment?.draftOnly) throw new Error(state.question.assignment.guidance);
     const task = { id: crypto.randomUUID(), tabId: state.target.tabId, target: state.target, currentQuestionId: state.question?.questionId, paused: false, stopped: false, request: null };
     controller = task;
     operationEpoch++;
@@ -754,7 +790,7 @@ async function handle(message, pageTarget = null, courseTabId = null) {
     const task = { id: crypto.randomUUID(), tabId: null, target: null, paused: false, stopped: false, request: null };
     controller = task;
     operationEpoch++;
-    await publish({ busy: true, operation: null, paused: false, pauseReason: null, autoFill, error: '', completed: 0, typingProgress: null, phase: 'reading', answer: null });
+    await publish({ busy: true, operation: null, paused: false, pauseReason: null, autoFill, error: '', completed: 0, pageQuestions: null, typingProgress: null, phase: 'reading', answer: null, question: null, target: null, editor: null, run: null, cliStage: '' });
     try {
       const prefs = await preferences(message), tab = courseTabId == null ? await activeTab() : await chrome.tabs.get(courseTabId); assertCurrent(task);
       if (pageTarget && pageTarget.tabId !== tab.id) throw new Error('请在当前练习页内开始任务');

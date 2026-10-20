@@ -22,7 +22,6 @@ function fixture(options = {}) {
       calls.push({ action, payload: structuredClone(payload), target: structuredClone(target) });
       if (action === 'play') { if (playGate) await playGate; page.media.paused = false; }
       if (action === 'stop' && payload.pause !== false) page.media.paused = true;
-      if (action === 'chooseQuestion') for (const question of page.questions) question.selected = question.key === payload.key;
       return [{ documentId: 'document-1', frameId: 0, result: structuredClone(page) }];
     } }
   };
@@ -100,12 +99,18 @@ test('quiz preview is opt-in, is once per question and stays on the bound course
   assert.equal(f.runtime.state.phase, 'awaitingQuiz');
 });
 
-test('multiple visible questions need an explicit selection before an AI request', async () => {
-  const f = fixture({ snapshot: { questions: [{ key: 'q1', index: 0, title: '题一', selected: false }, { key: 'q2', index: 1, title: '题二', selected: false }], media: { count: 0, signature: '', ready: false } } });
+test('multiple visible questions can preview the first or fill the page without choosing a question', async () => {
+  const f = fixture({ settings: { ...COURSE_SETTINGS, autoPreviewQuiz: true }, snapshot: { questions: [{ key: 'q1', index: 0, title: '题一' }, { key: 'q2', index: 1, title: '题二' }], media: { count: 0, signature: '', ready: false } } });
   await f.runtime.handle({ action: 'scan' });
-  await assert.rejects(f.runtime.handle({ action: 'previewQuiz' }), /先在网课区选择/); assert.deepEqual(f.solves, []);
-  await f.runtime.handle({ action: 'chooseQuestion', key: 'q2' }); await f.runtime.handle({ action: 'previewQuiz' });
-  assert.equal(f.page.questions[1].selected, true); assert.equal(f.solves.length, 1);
+  assert.deepEqual(f.solves, [], 'identifying a page must not start AI');
+  await f.runtime.handle({ action: 'start' });
+  assert.deepEqual(f.solves, [], 'the existing unique-question auto preview setting must not silently start AI on a multi-question page');
+  await f.runtime.handle({ action: 'previewQuiz' }); assert.deepEqual(f.solves, [{ tabId: 7, fill: false }]);
+  await f.runtime.handle({ action: 'resume' }); assert.equal(f.solves.length, 1);
+  await f.runtime.handle({ action: 'fillQuiz' });
+  assert.deepEqual(f.solves.at(-1), { tabId: 7, fill: true });
+  assert.equal(f.runtime.state.phase, 'awaitingQuiz'); assert.match(f.runtime.state.message, /当前页 2 道题/);
+  assert.equal(f.calls.some(call => !['read', 'stop'].includes(call.action)), false, 'AI startup must not select questions or navigate');
 });
 
 test('quiz appearing during playback pauses the real video before entering the AI flow', async () => {

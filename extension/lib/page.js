@@ -40,42 +40,56 @@ export async function pageAction(action, payload = {}) {
       return (result >>> 0).toString(16);
     };
     const marker = /(?:编程|单选|多选|判断|填空|简答)题|第\s*\d+\s*\/\s*\d+\s*题/;
-    const courseHost = new URL(location.href).hostname;
-    const selectedCourseRoots = (courseHost === 'moodle.syxy.ouchn.cn' || ['chaoxing.com', 'zhihuishu.com', 'icourse163.org'].some((host) => courseHost === host || courseHost.endsWith(`.${host}`))) ? all('[data-quizmate-course-question="selected"]') : [];
-    if (selectedCourseRoots.length > 1) return readResult({ ok: false, error: '网课区有多个选中题块，请重新选择本题' });
-    const courseQuestion = selectedCourseRoots.length === 1;
-    const candidates = all('[data-nexly-question],.question-container,.exam-question,.question-box,.problem-container,.subject-container').filter((el) => marker.test(text(el)) || el.hasAttribute('data-nexly-question'));
+    const courseUrl = new URL(location.href), courseHost = courseUrl.hostname;
+    // 与网课区复用同一份平台选择器，自动发现所有题块；旧版留下的选中标记不再影响范围。
+    const course = courseUrl.protocol === 'https:' && !courseUrl.username && !courseUrl.password && !courseUrl.port && payload.coursePlatforms?.find((item) => item.hosts.some((host) => courseHost === host || !item.exactHosts && courseHost.endsWith(`.${host}`)));
+    const courseRoots = course ? all(course.questions).filter((node) => !node.matches('.que.description')) : [];
+    const questionSelector = '[data-nexly-question],.question-container,.exam-question,.question-box,.problem-container,.subject-container,.que';
+    // 合并选择器后一次查询，保证通用题块与平台题块混用时仍保持页面原始顺序。
+    const candidates = all(course ? `${questionSelector},${course.questions}` : questionSelector).filter((el) => !el.matches('.que.description') && (courseRoots.includes(el) || marker.test(text(el)) || el.hasAttribute('data-nexly-question') || el.matches('.que') && el.querySelectorAll('input:not([type="hidden"]),textarea,[role="radio"],[role="checkbox"],[contenteditable="true"]').length));
     const leafCandidates = candidates.filter((candidate) => !candidates.some((other) => candidate !== other && candidate.contains(other)));
-    if (!courseQuestion && leafCandidates.length > 1) return readResult({ ok: false, error: '页面同时显示多个活动题目区域，请选中需要处理的题目' });
-    const root = selectedCourseRoots[0] || leafCandidates[0] || document.body;
+    // 题块索引和站点节点 ID 只负责定位；真正写入时仍要核对题干、选项及 questionId，不能靠索引盲写。
+    const questionKeys = leafCandidates.map((node, index) => `block-${hash(`${index}|${node.id || ''}`)}`);
+    const requestedIndex = payload.questionKey ? questionKeys.indexOf(payload.questionKey) : -1;
+    if (payload.questionKey && requestedIndex < 0) return readResult({ ok: false, error: '当前页题块已变化或消失，已停止旧答案操作，请重新读取' });
+    // Moodle 作业说明页没有 .que 和答题控件，不能退回 body 把导航、旧编辑器当题面。
+    const assignmentPage = /\/mod\/assign\/view\.php$/.test(courseUrl.pathname);
+    const assignmentIntro = assignmentPage ? all('#intro,.activity-description').find((node) => text(node)) : null;
+    const assignmentId = assignmentPage ? courseUrl.searchParams.get('id') : null;
+    if (assignmentPage && (!assignmentIntro || !assignmentId || !/^\d+$/.test(assignmentId) || assignmentId.length > 100)) return readResult({ ok: false, error: '作业说明尚未完整加载，请打开大作业说明页后重新读取' });
+    const root = assignmentIntro || (payload.questionKey ? leafCandidates[requestedIndex] : leafCandidates[0] || document.body);
     if (!root) return readResult({ ok: false, error: '页面尚未加载完成' });
+    const moodleQuestion = root.matches('.que');
+    const courseQuestion = moodleQuestion || courseRoots.includes(root);
 
     const editorSelector = '.monaco-editor:not(.original-in-monaco-diff-editor),.ace_editor,.CodeMirror,textarea[data-code-editor],textarea.code-editor,textarea[data-language]';
     const scopedEditors = all(editorSelector, root);
-    const editorRoots = scopedEditors.length ? scopedEditors : all(editorSelector);
+    const editorRoots = assignmentPage ? [] : scopedEditors.length ? scopedEditors : leafCandidates.length > 1 ? [] : all(editorSelector);
 
-    function questionText() {
-      const clone = root.cloneNode(true);
-      const originals = [...root.querySelectorAll('*')], copies = [...clone.querySelectorAll('*')];
+    function questionText(questionRoot = root) {
+      const clone = questionRoot.cloneNode(true);
+      const originals = [...questionRoot.querySelectorAll('*')], copies = [...clone.querySelectorAll('*')];
       originals.forEach((el, index) => { if (!visible(el)) copies[index]?.remove(); });
       clone.querySelectorAll('script,style,nav,header,footer,button,textarea,input,select,.monaco-editor,.ace_editor,.CodeMirror,[contenteditable="true"],[hidden],[aria-hidden="true"],.ant-tabs-content-holder,.test-results,.execution-result,[data-nexly-result]').forEach((el) => el.remove());
+      // Moodle 的状态、标记框和清空选项入口不属于题面；这些控件显隐变化不能被当作换题。
+      if (questionRoot.matches('.que')) clone.querySelectorAll('.info,.outcome,.comment,.history,.im-controls,.specificfeedback,.generalfeedback,.qtype_multichoice_clearchoice,.accesshide,.sr-only').forEach((el) => el.remove());
       // 克隆节点没有布局；为块级元素加换行后读 textContent，避免题干、样例挤成一行。
       clone.querySelectorAll('p,div,section,article,h1,h2,h3,h4,h5,h6,li,pre,tr,br').forEach((el) => el.append(document.createTextNode('\n')));
       let value = normalize(clone.textContent).replace(/\n[ \t]*\n+/g, '\n');
       const start = value.search(marker);
-      if (start >= 0) value = value.slice(start);
+      if (start >= 0 && !assignmentPage) value = value.slice(start);
       value = value.replace(/\n(?:控制台|测试用例|提交结果|提交记录|执行结果|重置代码|HarmonyOS Developer|工具\s*\n)[\s\S]*$/, '').trim();
       return value;
     }
     const stem = questionText();
-    if (!marker.test(stem) && !root.hasAttribute('data-nexly-question') && !courseQuestion) return readResult({ ok: false, error: '此 frame 没有识别到练习题，不会操作普通表单' });
+    if (!marker.test(stem) && !root.hasAttribute('data-nexly-question') && !courseQuestion && !assignmentPage) return readResult({ ok: false, error: '此 frame 没有识别到练习题，不会操作普通表单' });
     if (!stem || stem.length > 48000) return readResult({ ok: false, error: '题干过长或未能定位题目区域，请缩小页面内容或反馈页面结构' });
 
     // 原生 radio/checkbox 常被站点用 display:none / visibility:hidden 隐藏、只显示自绘样式。
     // 只要它自己、它的 label 包装或所在选项行可见，就仍然算作可操作的真实选项。
     const optionWrapper = 'label,.ant-radio-wrapper,.ant-checkbox-wrapper,.el-radio,.el-checkbox';
     const usableOption = (node) => visible(node) || visible(node.closest(optionWrapper)) || visible(node.parentElement);
-    const isOptionNode = (node) => !node.closest('[role="radio"],[role="checkbox"]') || node.matches('[role="radio"],[role="checkbox"]');
+    const isOptionNode = (node) => !(moodleQuestion && node.closest('.info,.questionflag,.outcome,.comment,.qtype_multichoice_clearchoice')) && (!node.closest('[role="radio"],[role="checkbox"]') || node.matches('[role="radio"],[role="checkbox"]'));
     let optionSelector = 'input[type="radio"],input[type="checkbox"],[role="radio"],[role="checkbox"]';
     if (courseQuestion && !root.querySelector(optionSelector)) optionSelector = '.Zy_ulTop > li,.answerBg .answer_p,.choices > li,.optionUl label,.nodeLab,.option-result';
     const rawOptionNodes = [...root.querySelectorAll(optionSelector)].filter(isOptionNode);
@@ -147,11 +161,12 @@ export async function pageAction(action, payload = {}) {
     const optionMarks = (stem.match(/(?:^|[\s\n:：])[A-D][.、．)）](?=\s*\S)/g) || []).length;
     const hasChoiceOptions = optionNodes.length >= 2;
     let type;
-    if (/编程题/.test(stem)) type = 'code';
+    if (assignmentPage) type = 'text';
+    else if (/编程题/.test(stem)) type = 'code';
     else if (/多选题/.test(stem)) type = 'multiple';
-    else if (/判断题/.test(stem)) type = 'judge';
+    else if (/判断题/.test(stem) || root.matches('.que.truefalse')) type = 'judge';
     else if (/单选题/.test(stem)) type = 'single';
-    else if (/填空题/.test(stem)) type = 'blank';
+    else if (/填空题/.test(stem) || root.matches('.que.shortanswer,.que.numerical')) type = 'blank';
     else if (/简答题/.test(stem)) type = 'text';
     else if (hasCheckbox) type = 'multiple';
     else if (hasChoiceOptions) type = 'single';
@@ -159,7 +174,7 @@ export async function pageAction(action, payload = {}) {
     else if (optionMarks >= 2) type = 'single';
     else if (editorRoots.length) type = 'code';
     else type = 'text';
-    const fields = type === 'blank' || type === 'text' ? inputNodes.map((el, i) => ({ id: `field-${i}`, label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || `第 ${i + 1} 空` })) : [];
+    const fields = assignmentPage ? [{ id: 'assignment-draft', label: '作业参考草稿（人工录入及提交）' }] : type === 'blank' || type === 'text' ? inputNodes.map((el, i) => ({ id: `field-${i}`, label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || `第 ${i + 1} 空` })) : [];
     if (['single', 'multiple', 'judge'].includes(type) && (options.length < 2 || options.some((o) => !o.text))) return readResult({ ok: false, error: '选择题选项不完整，已停止识别' });
     if (['blank', 'text'].includes(type) && !fields.length) return readResult({ ok: false, error: '没有识别到可编辑答案区域' });
     // 只有编程题才查找执行入口；选择题、填空题等的页面上出现的“验证/执行”按钮一律不属于本流程。
@@ -190,9 +205,15 @@ export async function pageAction(action, payload = {}) {
     // 注入结果会被结构化克隆，DOM 节点不能离开页面。
     const runInfo = (entry = runEntry()) => ({ available: entry.available, reason: entry.reason, label: entry.label, count: entry.count, disabled: entry.disabled });
     const language = all('select,[role="combobox"],.ant-select-selection-item,.el-select__selected-item', root).map((el) => el.tagName === 'SELECT' ? el.selectedOptions?.[0]?.textContent : text(el) || text(el.parentElement)).find((value) => /ArkTS|JavaScript|TypeScript|Python|Java\b|C\+\+|C#|Go\b|Rust/i.test(value || '')) || '';
-    const title = stem.split('\n').map((line) => line.trim()).find((line) => line && !marker.test(line) && !/^\d+[、.]?$/.test(line))?.slice(0, 200) || stem.slice(0, 100);
+    const title = assignmentPage ? (stem.split('\n').find((line) => /大作业[：:]/.test(line)) || text(document.querySelector('#page-header h1,h1')) || '大作业参考草稿').slice(0, 200) : stem.split('\n').map((line) => line.trim()).find((line) => line && !marker.test(line) && !/^\d+[、.]?$/.test(line))?.slice(0, 200) || stem.slice(0, 100);
     const pageUrl = `${location.origin}${location.pathname}`;
-    const questionId = `${pageUrl}#${hash(JSON.stringify([type, stem, options, fields, language]))}`;
+    const rootIndex = leafCandidates.indexOf(root);
+    const pageQuestions = leafCandidates.length > 1 && rootIndex >= 0 ? { keys: questionKeys, currentKey: questionKeys[rootIndex], signature: hash(JSON.stringify(leafCandidates.map((node, index) => [questionKeys[index], questionText(node)]))) } : null;
+    const identityParts = [type, stem, options, fields, language];
+    // 同页题干相同的两道题也有各自身份，不能被本批去重误跳过。
+    if (pageQuestions) identityParts.push(pageQuestions.currentKey);
+    if (assignmentPage) identityParts.push(assignmentId);
+    const questionId = `${pageUrl}#${hash(JSON.stringify(identityParts))}`;
 
     function codeEditor() {
       const bindings = [];
@@ -260,7 +281,17 @@ export async function pageAction(action, payload = {}) {
       catch (error) { editorInfo = { kind: editorRoots[0]?.className || 'unknown', supported: false, retryable: true, code: '', error: error.message, errorCode: error.code }; }
     }
     const question = { questionId, title, type, stem, options: type === 'code' ? [] : options, fields, language: normalize(language).slice(0, 100), starterCode: editorInfo.code, pageUrl };
-    if (action === 'read') return readResult({ ok: true, question, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null }, run: runInfo(), visible: document.visibilityState === 'visible' });
+    if (assignmentPage) {
+      const minimum = stem.match(/(?:不少于|不低于|至少)\s*([0-9][0-9,，]*)\s*字/);
+      const count = minimum ? Number(minimum[1].replace(/[,，]/g, '')) : null;
+      // 未见实际编辑入口前只生成草稿；尤其不能用脚本赋值绕过页面明确的禁粘贴规则。
+      question.assignment = { draftOnly: true, minimumCharacters: Number.isInteger(count) && count > 0 && count <= 48000 ? count : null,
+        guidance: /(?:不能|不可|不允许|禁止|不得)\s*(?:复制\s*粘贴|粘贴)/.test(stem)
+          ? '页面明确禁止复制粘贴；仅生成可复核的参考草稿，请按平台规则人工录入和提交。'
+          : '大作业仅生成参考草稿；请人工打开“添加作业”，复核、录入并最终提交。' };
+    }
+    if (action === 'read') return readResult({ ok: true, question, pageQuestions, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null }, run: runInfo(), visible: document.visibilityState === 'visible' });
+    if (assignmentPage && ['fill', 'fillStep', 'run', 'next'].includes(action)) return { ok: false, error: question.assignment.guidance };
     if (!payload.allowBackground && document.visibilityState !== 'visible') return action === 'fillStep' ? { ok: true, waitingForFocus: true } : { ok: false, error: '练习页已隐藏，已停止页面操作；请回到原标签后继续' };
     if (payload.questionId !== questionId) return { ok: false, error: '页面题目已变化，拒绝把旧答案写入新题' };
 

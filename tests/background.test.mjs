@@ -7,7 +7,7 @@ const until = async (predicate) => { for (let i = 0; i < 1000; i++) { if (predic
 
 test('background workflow uses JSON-safe Gemini injections and verifies freshness, pause, cancel and confidence gates', async (t) => {
   let saved = null, question = structuredClone(single), active = true, focused = true, frameFocused = true, writes = 0, fillResponder = null;
-  let tabUrlVisible = true, pageReadable = true;
+  let tabUrlVisible = true, pageReadable = true, pageSheet = null, navigationSearches = 0;
   const shortcut = event(), navigated = event(), storageChanged = event();
   const localSettings = {}, appearanceMessages = [];
   let navigationQuestion = null, navigationQueue = [], navigationClicks = 0, editorReadyAt = 0, navigationEditorDelay = 0, hiddenFrame = false, runClicks = 0, runAvailable = true, runFailure = null, emptyInjection = false;
@@ -30,11 +30,17 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
       }
       const [action, payload] = JSON.parse(JSON.stringify(args));
       if (action === 'read' && !pageReadable) throw new Error('Cannot access contents of the page. Extension manifest must request permission to access the respective host.');
-      if (action === 'find') return [{ result: { ok: true, candidates: (navigationQuestion || navigationQueue.length) && target.frameIds?.[0] === 0 ? [{ key: 'random', label: '随机一题', rank: 1, random: true, disabled: false }] : [] } }];
+      if (action === 'find') { navigationSearches++; return [{ result: { ok: true, candidates: (navigationQuestion || navigationQueue.length) && target.frameIds?.[0] === 0 ? [{ key: 'random', label: '随机一题', rank: 1, random: true, disabled: false }] : [] } }]; }
       if (action === 'click') { assert.equal(target.frameIds[0], 0); question = structuredClone(navigationQueue.length ? navigationQueue.shift() : navigationQuestion); navigationQuestion = null; navigationClicks++; editorReadyAt = Date.now() + navigationEditorDelay; return [{ result: { ok: true, clicked: true, navigationLabel: '随机一题', random: true } }]; }
       if (action === 'focusState') return [{ result: { ok: true, visible: true, focused: frameFocused } }];
       if (action === 'read') {
+        if (pageSheet) {
+          const selected = payload?.questionKey ? pageSheet.find(item => item.questionId === payload.questionKey) : pageSheet[0];
+          if (!selected) return [{ frameId: 4, result: { ok: false, error: '当前页题块已变化或消失' } }];
+          question = structuredClone(selected);
+        }
         const result = { frameId: 4, result: { ok: true, question: structuredClone(question), editor: { supported: Date.now() >= editorReadyAt, error: Date.now() < editorReadyAt ? '编辑器正在初始化' : '' }, run: question.type === 'code' ? { available: runAvailable, reason: runAvailable ? '' : 'missing', label: runAvailable ? '执行验证' : '', count: runAvailable ? 1 : 0, disabled: false } : { available: false, reason: 'not-code', label: '', count: 0, disabled: false }, visible: true } };
+        if (pageSheet) result.result.pageQuestions = { keys: pageSheet.map(item => item.questionId), currentKey: question.questionId, signature: pageSheet.map(item => item.questionId).join('|') };
         if (hiddenFrame && target.allFrames) return [result,
           { frameId: 0, result: { ok: false, frame: { shown: true, children: [{ url: single.pageUrl, shown: true }, { url: single.pageUrl + '?cached', shown: false }] } } },
           { frameId: 7, result: { ...result.result, question: { ...single, questionId: 'hidden-old-question' }, frame: { shown: true, url: single.pageUrl + '?cached', children: [] } } }];
@@ -381,6 +387,78 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   let rejectedSenderReplied = false;
   commands.emit({ type: 'command', action: 'start', provider: 'codex' }, { id: 'test', url: 'https://example.com', tab: { id: 1 } }, () => { rejectedSenderReplied = true; });
   assert.equal(rejectedSenderReplied, false);
+
+  const sheet = () => [1, 2, 3].map(index => ({ ...single, questionId: `sheet-${index}`, title: `同页第 ${index} 题` }));
+  await t.test('CLI fills every current-page block even with count=1 and never searches navigation', async () => {
+    pageSheet = sheet(); writes = 0;
+    const searches = navigationSearches, clicks = navigationClicks;
+    let after = outbound.length;
+    assert.equal((await command('start', { count: 1 })).ok, true);
+    for (let index = 0; index < pageSheet.length; index++) {
+      const request = await nextSolve(after); after = outbound.indexOf(request) + 1;
+      assert.equal(request.question.questionId, pageSheet[index].questionId);
+      if (index === 1) {
+        assert.equal((await pageCommand('pageChanged')).ok, true);
+        assert.equal(saved.question.questionId, 'sheet-2', 'DOM notifications must not reset the scope to the first block');
+        await command('pause'); answer(request);
+        await until(() => saved.paused && saved.answer);
+        assert.equal(writes, 1, 'an answer received while paused must not be written');
+        assert.equal(saved.target.questionKey, 'sheet-2');
+        await command('resume');
+      } else answer(request);
+    }
+    await until(() => !saved.busy);
+    assert.equal(saved.completed, 3); assert.equal(writes, 3); assert.equal(saved.phase, 'filled', saved.error);
+    assert.equal(navigationSearches, searches); assert.equal(navigationClicks, clicks);
+    assert.match(saved.log.at(-1).text, /当前页处理完成/);
+  });
+  await t.test('stopping a sheet drops late answers without touching the remaining blocks', async () => {
+    pageSheet = sheet(); writes = 0;
+    let after = outbound.length;
+    await command('start', { count: 1 }); const first = await nextSolve(after); answer(first);
+    after = outbound.indexOf(first) + 1; const second = await nextSolve(after);
+    assert.equal(saved.completed, 1); await command('stop'); const stopped = outbound.length; answer(second);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(writes, 1); assert.equal(saved.phase, 'stopped');
+    assert.equal(outbound.slice(stopped).some(item => item.action === 'solve'), false);
+  });
+  await t.test('low confidence and a replaced sheet stop before another answer is written', async () => {
+    for (const mode of ['confidence', 'replacement']) {
+      pageSheet = sheet(); writes = 0; const after = outbound.length;
+      await command('start', { count: 1 }); const request = await nextSolve(after);
+      if (mode === 'replacement') pageSheet[0] = { ...pageSheet[0], questionId: 'replacement-sheet' };
+      answer(request, mode === 'confidence' ? { confidence: 0.7 } : {});
+      await until(() => !saved.busy);
+      assert.equal(writes, 0); assert.equal(saved.phase, mode === 'confidence' ? 'ready' : 'error');
+      assert.equal(outbound.slice(after).filter(item => item.action === 'solve').length, 1);
+    }
+    pageSheet = null;
+  });
+
+  await t.test('assignment generates exactly one review draft, blocks filling/navigation and clears old answers on failed reads', async () => {
+    pageSheet = null; writes = 0;
+    question = { ...single, questionId: 'assignment-123', type: 'text', options: [], fields: [{ id: 'assignment-draft', label: '参考草稿' }], assignment: { draftOnly: true, minimumCharacters: 1000, guidance: '页面禁止复制粘贴；请人工录入和提交。' } };
+    const searches = navigationSearches, clicks = navigationClicks, after = outbound.length;
+    assert.equal((await command('read')).ok, true);
+    await command('start', { provider: 'gemini', count: 20 });
+    const request = await nextSolve(after);
+    assert.deepEqual(request.question.assignment, question.assignment);
+    messages.emit({ requestId: request.requestId, type: 'progress', data: { elapsedSeconds: 2, stage: 'waiting', content: 'PRIVATE-DATA' } });
+    await until(() => saved.cliStage === 'waiting');
+    assert.match(saved.log.at(-1).text, /首段输出/);
+    answer(request, { type: 'text', choiceIds: [], fills: [{ fieldId: 'assignment-draft', value: '学习参考草稿'.repeat(220) }] });
+    await until(() => !saved.busy);
+    assert.equal(saved.phase, 'ready', saved.error); assert.equal(saved.autoFill, false);
+    assert.equal(saved.completed, 0); assert.equal(writes, 0);
+    assert.equal(navigationSearches, searches); assert.equal(navigationClicks, clicks);
+    assert.equal(outbound.slice(after).filter(item => item.action === 'solve').length, 1);
+    assert.doesNotMatch(JSON.stringify(saved), /PRIVATE-DATA/);
+    const fill = await command('fill'); assert.equal(fill.ok, false); assert.match(fill.error, /人工录入/);
+    pageReadable = false;
+    assert.equal((await command('read')).ok, false);
+    assert.equal(saved.question, null); assert.equal(saved.answer, null); assert.equal(saved.target, null);
+    pageReadable = true; question = single;
+  });
 
   // 新上限必须在后台也接受，不能只放宽面板输入框。
   offset = outbound.length;

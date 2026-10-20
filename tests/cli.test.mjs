@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises
 import { join } from 'node:path';
 import { tmpdir, platform } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { cliFailure, childEnvironment, redact, claudeArguments, codexArguments, geminiArguments, qwenArguments, kimiArguments, assertCliIsolation, decodeCliResult, runProcess, resolveCommand } from '../bridge/cli.mjs';
+import { cliFailure, childEnvironment, redact, claudeArguments, codexArguments, geminiArguments, createGeminiStream, qwenArguments, kimiArguments, assertCliIsolation, decodeCliResult, runProcess, resolveCommand } from '../bridge/cli.mjs';
 import { ANSWER_SCHEMA } from '../extension/lib/contracts.js';
 import { single, correct, codeQuestion } from './data.mjs';
 
@@ -151,10 +151,11 @@ test('domestic CLIs refuse hooks/plugins rather than silently enabling local too
   await assert.rejects(assertCliIsolation('kimi', env, dir), /插件/);
 });
 
-test('Qwen and Kimi adapters run the real bridge process against isolated mock CLI executables', async (t) => {
+test('Qwen, Kimi and Gemini adapters run the real bridge process against isolated mock CLI executables', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'nexly-cli-home-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  await mkdir(join(home, '.nexly-web-agent')); await mkdir(join(home, '.qwen')); await mkdir(join(home, '.kimi'));
+  await mkdir(join(home, '.nexly-web-agent')); await mkdir(join(home, '.qwen')); await mkdir(join(home, '.kimi')); await mkdir(join(home, '.gemini'));
+  await writeFile(join(home, '.gemini/.env'), 'GEMINI_API_KEY=fake-test-credential\nGEMINI_MODEL=current-test-model\nGOOGLE_GEMINI_BASE_URL=https://example.invalid/test\n');
   const executable = join(home, 'mock-cli.mjs');
   const repairQuestion = { ...codeQuestion, executionFeedback: { attempt: 1, code: 'for (const n of values) {}', result: '编译错误\nsolution.ts(18,23): error TS2802: Set<number>' } };
   const repairAnswer = { ...correct, questionId: codeQuestion.questionId, type: 'code', choiceIds: [], code: 'values.forEach((n) => console.log(n));' };
@@ -174,6 +175,14 @@ if(args.includes('--print')) {
  assert.ok(readFileSync(args[args.indexOf('--agent-file')+1],'utf8').includes('tools: []'));
  assert.deepEqual(JSON.parse(readFileSync(args[args.indexOf('--mcp-config-file')+1],'utf8')),{mcpServers:{}});
  process.stdout.write(JSON.stringify(answer));
+} else if(args.includes('--admin-policy')) {
+ assert.ok(args[args.indexOf('--prompt')+1].trim());
+ assert.equal(args[args.indexOf('--output-format')+1],'stream-json');
+ assert.equal(args[args.indexOf('--allowed-mcp-server-names')+1],'__nexly_no_mcp__');
+ assert.equal(process.env.GEMINI_MODEL,'current-test-model');
+ assert.equal(process.env.GEMINI_API_KEY,'fake-test-credential');
+ assert.ok(readFileSync(args[args.indexOf('--admin-policy')+1],'utf8').includes('decision = \"deny\"'));
+ for(const event of [{type:'init',model:process.env.GEMINI_MODEL},{type:'message',role:'assistant',content:JSON.stringify(answer),delta:true},{type:'result',status:'success'}]) process.stdout.write(JSON.stringify(event)+'\\n');
 } else {
  assert.equal(args[args.indexOf('--core-tools')+1],'__nexly_no_tools__');
  assert.equal(args[args.indexOf('--allowed-mcp-server-names')+1],'__nexly_no_mcp__');
@@ -182,13 +191,52 @@ if(args.includes('--print')) {
 `, { mode: 0o700 });
   await chmod(executable, 0o700);
   const configPath = join(home, '.nexly-web-agent/config.json');
-  const config = JSON.stringify({ cliPaths: { qwen: executable, kimi: executable } });
+  const config = JSON.stringify({ cliPaths: { qwen: executable, kimi: executable, gemini: executable } });
   await writeFile(configPath, config);
   const module = new URL('../bridge/cli.mjs', import.meta.url).href;
-  for (const provider of ['qwen', 'kimi']) for (const [question, expected] of [[single, correct], [repairQuestion, repairAnswer]]) {
+  for (const provider of ['qwen', 'kimi', 'gemini']) for (const [question, expected] of [[single, correct], [repairQuestion, repairAnswer]]) {
     const program = `import {solveWithCli} from ${JSON.stringify(module)};const result=await solveWithCli(${JSON.stringify(provider)},${JSON.stringify(question)});process.stdout.write(JSON.stringify(result.answer));`;
     const {stdout} = await runProcess(process.execPath, ['--input-type=module', '-e', program], { env: { ...childEnvironment(), HOME: home, USERPROFILE: home, QWEN_HOME: join(home, '.qwen'), KIMI_SHARE_DIR: join(home, '.kimi'), QWEN_CODE_SYSTEM_SETTINGS_PATH: join(home, 'system.json'), QWEN_CODE_SYSTEM_DEFAULTS_PATH: join(home, 'defaults.json') } });
     assert.deepEqual(JSON.parse(stdout), expected);
   }
   assert.equal(await readFile(configPath, 'utf8'), config, 'never edits existing CLI configuration');
+});
+
+
+test('Gemini uses an explicit non-empty headless prompt, stream progress and an MCP denylist', () => {
+  const args = geminiArguments('/deny.toml');
+  assert.ok(args[args.indexOf('--prompt') + 1].trim());
+  assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
+  assert.equal(args[args.indexOf('--allowed-mcp-server-names') + 1], '__nexly_no_mcp__');
+});
+
+test('Gemini stream parsing handles arbitrary chunks without forwarding answer or user data', () => {
+  const progress = [], stream = createGeminiStream(item => progress.push(item));
+  const source = JSON.stringify(correct), half = Math.floor(source.length / 2);
+  const events = [{ type: 'init', model: 'test-current-model', session_id: 'private-session' }, { type: 'message', role: 'user', content: 'PRIVATE-QUESTION' }, { type: 'message', role: 'assistant', content: source.slice(0, half), delta: true }, { type: 'message', role: 'assistant', content: source.slice(half), delta: true }, { type: 'result', status: 'success' }];
+  const output = events.map(event => JSON.stringify(event)).join('\n');
+  for (let index = 0; index < output.length; index += 7) stream.feed(output.slice(index, index + 7));
+  assert.equal(stream.finish(), source);
+  assert.deepEqual(decodeCliResult('gemini', output, null, single), correct);
+  assert.deepEqual(progress.map(item => item.stage), ['waiting', 'receiving', 'finishing']);
+  assert.doesNotMatch(JSON.stringify(progress), /PRIVATE|private-session|questionId|content/);
+  stream.diagnose('private-api-key: private-value; retrying request');
+  assert.equal(progress.at(-1).stage, 'retrying');
+  assert.doesNotMatch(JSON.stringify(progress), /private-value/);
+});
+
+test('Gemini never accepts partial, failed or malformed streams as a complete answer', () => {
+  const assistant = JSON.stringify({ type: 'message', role: 'assistant', content: JSON.stringify(correct) });
+  const success = JSON.stringify({ type: 'result', status: 'success' });
+  for (const output of [assistant, assistant + '\n' + JSON.stringify({ type: 'result', status: 'error', error: { message: '401 invalid api key PRIVATE' } }), assistant + '\ngarbage\n' + success, success]) {
+    assert.throws(() => decodeCliResult('gemini', output, null, single));
+  }
+  assert.match(cliFailure(1, 'self-signed certificate in certificate chain'), /证书/);
+});
+
+test('process callbacks can observe streaming output before process completion and timeout reports its stage', async () => {
+  let out = '', err = '';
+  const result = await runProcess(process.execPath, ['-e', 'process.stdout.write("first");setTimeout(()=>{process.stderr.write("warning");process.stdout.write("last")},40)'], { onStdout: chunk => { out += chunk; }, onStderr: chunk => { err += chunk; } });
+  assert.equal(out, 'firstlast'); assert.equal(err, 'warning'); assert.equal(result.stdout, out);
+  await assert.rejects(runProcess(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { timeoutMs: 30, timeoutMessage: () => 'Gemini 请求超时：等待模型首段输出' }), /等待模型首段输出/);
 });

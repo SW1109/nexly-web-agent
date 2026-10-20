@@ -1,4 +1,4 @@
-import { HOST_NAME, VERSION } from './contracts.js';
+import { HOST_NAME, VERSION, CLI_BRIDGE_TIMEOUT_MS } from './contracts.js';
 let port = null;
 const pending = new Map();
 function connectionError(detail) {
@@ -56,7 +56,7 @@ export function nativeRequest(action, data = {}, onProgress) {
         try { connection.postMessage({ version: VERSION, requestId: crypto.randomUUID(), action: 'cancel', targetId: requestId }); }
         catch (error) { discardConnection(connection, error); }
       }
-    }, action === 'solve' ? 200000 : 20000);
+    }, action === 'solve' ? CLI_BRIDGE_TIMEOUT_MS : 20000);
     pending.set(requestId, { connection, action, resolve, reject, timer, onProgress });
     try { connection.postMessage({ version: VERSION, requestId, action, ...data }); }
     catch (error) { discardConnection(connection, error); }
