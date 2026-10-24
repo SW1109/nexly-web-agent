@@ -1,6 +1,6 @@
 # 审核测试指引 (Reviewer Notes)
 
-**扩展名称**：QuizMate · 智答伴侣 (Version: 0.6.0)
+**扩展名称**：QuizMate · 智答伴侣 (Version: 0.6.1)
 
 ---
 
