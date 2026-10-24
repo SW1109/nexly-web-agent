@@ -40,7 +40,7 @@ function showAppearance(appearance) {
   $('controls-opacity').min = OPACITY.min; $('controls-opacity').max = OPACITY.max; $('controls-opacity').step = 1;
   $('controls-opacity').value = appearance.opacity;
   $('opacity-value').value = `${appearance.opacity}%`; $('opacity-preview').style.opacity = appearance.opacity / 100;
-  $('opacity-hint').textContent = `默认 ${OPACITY.defaultValue}%；可调 ${OPACITY.min}～${OPACITY.max}%。数值越低越透明，展开操作时恢复清晰显示。`;
+  $('opacity-hint').textContent = `默认 ${OPACITY.defaultValue}%；可调 ${OPACITY.min}～${OPACITY.max}%。数值越低越透明，图标与展开后的整个页内面板共用此透明度。`;
 }
 function updateSummary() {
   $('provider-summary').textContent = $('connection-mode').value === 'api' ? `API · ${apiForm.summary}` : names[$('provider').value];

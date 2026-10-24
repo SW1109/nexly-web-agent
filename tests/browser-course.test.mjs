@@ -31,7 +31,7 @@ function html(id, url) {
   const directory = layout && !['custom','customExtra','standardExtra'].includes(layout) ? '' : id === 'chaoxing' ? links : `<ul class="${id === 'zhihuishu' ? 'videoList' : id === 'icourse' ? 'j-unitslist' : 'block_tree'}">${links}</ul>`;
   const questionClass = { chaoxing: 'TiMu', zhihuishu: 'questionWrap', icourse: 'u-questionItem', ouchn: 'que' }[id];
   const multipleQuiz = Array.from({length:4}, (_,index) => `${id==='ouchn' && index%2===0?'<div class="que description"><h2>题型说明</h2></div>':''}<div id="course-q${index}" class="${questionClass}${id==='ouchn'?(index<2?' multichoice':' truefalse'):''}" ${index%2===1?'data-quizmate-course-question="selected"':''}><div class="qtext">2 + 2 的结果是？</div><label><input type="radio" name="answer-${index}" value="a">A. 3</label><label><input type="radio" name="answer-${index}" value="b">B. 4</label></div>`).join('') + '<button id="previous" type="button" onclick="document.body.dataset.navs++">上一题</button><button id="next" type="button" onclick="document.body.dataset.navs++">下一题</button>';
-  const body = current === 3 ? `${layout==='multiQuiz'?multipleQuiz:`<div class="${questionClass}"><h2>2 + 2 的结果是？</h2><label><input type="radio" name="answer" value="a">A. 3</label><label><input type="radio" name="answer" value="b">B. 4</label></div>`}<button id="submit">提交答案</button>` : `<video width="320" height="180" preload="auto" muted src="/__fixture/clip.webm?chapter=${current}"></video>`;
+  const body = current === 3 ? `${layout==='multiQuiz'?multipleQuiz:`<div class="${questionClass}"><h2>2 + 2 的结果是？</h2><label><input type="radio" name="answer" value="a">A. 3</label><label><input type="radio" name="answer" value="b">B. 4</label></div>`}<button id="submit">提交答案</button>` : `<video width="320" height="180" preload="auto" src="/__fixture/clip.webm?chapter=${current}"></video>`;
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>模拟课程（非平台验收）</title><h1>模拟课程（非平台验收）</h1><div class="${layout && layout !== 'standardExtra' ? 'theme-outline' : 'block_navigation'}" id="catalog">${directory}</div>${paging}${layout.endsWith('Extra') ? '<aside><a href="/mod/page/view.php?id=199">正文推荐的其他资源</a></aside>' : ''}<main>${body}</main><script>
   document.body.dataset.clicks='0';document.body.dataset.submits='0';document.body.dataset.navs='0';
   document.getElementById('submit')?.addEventListener('click',()=>document.body.dataset.submits=String(Number(document.body.dataset.submits)+1));
@@ -45,7 +45,20 @@ function html(id, url) {
   });</script></html>`;
 }
 
-test('isolated Chrome course adapters, real playback, safe navigation, quiz readback and responsive workspace', { skip: !enabled, timeout: 150000 }, async (t) => {
+// 国开 HTML 文档的两种常见滚动布局；仅测试可见 DOM，不接入任何学时或完成接口。
+function documentHtml(url) {
+  const layout = url.searchParams.get('layout'), current = Number(url.searchParams.get('id')) - 100;
+  const href = index => `/mod/${index === 3 ? 'resource' : 'page'}/view.php?id=${100 + index}&layout=${layout}`;
+  const links = [1, 2, 3].map(index => `<li class="type_activity"><a href="${href(index)}"><span class="instancename">${index === 3 ? '视频教材' : '文档阅读'} ${index}</span></a></li>`).join('');
+  const paragraphs = Array.from({ length: 12 }, (_, index) => `<p style="height:100px;margin:0">第 ${index + 1} 段：模拟课程的 HTML 文档正文。</p>`).join('');
+  const content = current === 3 ? '<video width="320" height="180" preload="auto" src="/__fixture/clip.webm"></video>' : `<div class="document-scroll" ${layout === 'documentNested' ? 'style="height:260px;overflow:auto"' : ''}><div class="generalbox"><h2>文档阅读 ${current}</h2>${layout === 'documentEmbedded' ? '<iframe title="嵌入式阅读器" src="about:blank" width="300" height="200"></iframe>' : paragraphs}</div></div>`;
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>模拟 HTML 文档（非平台验收）</title>
+  <style>body{margin:0}#catalog{position:fixed;left:0;top:0;width:190px;height:220px;overflow:auto}#region-main{margin:40px 40px 0 220px}footer{height:600px}</style>
+  <aside id="catalog" class="block_navigation"><ul class="block_tree">${links}</ul><div style="height:1200px">独立目录滚动区</div></aside><main id="region-main">${content}</main><footer>页脚不属于正文</footer>
+  <script>addEventListener('pagehide',()=>{const root=document.querySelector('.generalbox');if(!root)return;const scroller=${JSON.stringify(layout)}==='documentNested'?document.querySelector('.document-scroll'):document.scrollingElement;const bottom=${JSON.stringify(layout)}==='documentNested'?scroller.getBoundingClientRect().bottom:innerHeight;const records=JSON.parse(sessionStorage.getItem('__fixtureDocumentExits')||'[]');records.push({id:${current},remaining:root.getBoundingClientRect().bottom-bottom,top:scroller.scrollTop,catalogTop:document.getElementById('catalog').scrollTop,pageTop:document.scrollingElement.scrollTop});sessionStorage.setItem('__fixtureDocumentExits',JSON.stringify(records));});</script></html>`;
+}
+
+test('isolated Chrome course adapters, real playback, safe navigation, quiz readback and responsive workspace', { skip: !enabled, timeout: 210000 }, async (t) => {
   const { chromium } = await import(process.env.NEXLY_PLAYWRIGHT_PATH || 'playwright');
   const temporary = await mkdtemp(join(tmpdir(), 'quizmate-course-'));
   const requests = [];
@@ -74,7 +87,7 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
     const platform = COURSE_PLATFORMS.find((item) => item.hosts.some((host) => url.hostname === host || !item.exactHosts && url.hostname.endsWith('.'+host)));
     if (!platform) return route.abort();
     if (url.pathname === '/__fixture/clip.webm') return route.fulfill({ status: 200, contentType: 'video/webm', body: media });
-    return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html(platform.id, url) });
+    return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: platform.id === 'ouchn' && url.searchParams.get('layout')?.startsWith('document') ? documentHtml(url) : html(platform.id, url) });
   });
   const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   await worker.evaluate(async () => { await chrome.storage.local.set({ courseSettings: { autoNext: true, playbackRate: 1, nextDelayMs: 0, stallSeconds: 30, autoPreviewQuiz: false } }); });
@@ -85,7 +98,7 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
   const page = await context.newPage();
   const command = (action, extra = {}) => panel.evaluate(async ({ action, extra }) => chrome.runtime.sendMessage({ type: 'course-command', action, ...extra }), { action, extra });
   const state = () => worker.evaluate(async () => (await chrome.storage.session.get('courseState')).courseState);
-  async function waitForPhase(phase) { try { await panel.waitForFunction((phase) => document.getElementById('course-status').dataset.phase === phase, phase, { timeout: 15000 }); } catch (error) { console.log('course failure:', JSON.stringify(await state()), page.url(), errors); throw error; } return state(); }
+  async function waitForPhase(phase, timeout = 15000) { try { await panel.waitForFunction((phase) => document.getElementById('course-status').dataset.phase === phase, phase, { timeout }); } catch (error) { console.log('course failure:', JSON.stringify(await state()), page.url(), errors); throw error; } return state(); }
   async function open(id, override = '') {
     await command('stop');await command('clear');await page.goto(override || initial[id]);
     await page.bringToFront();
@@ -217,15 +230,99 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
     try {
       await worker.evaluate(async (settings) => chrome.storage.local.set({ courseSettings: { ...settings, playbackRate: 16, autoNext: false } }), saved);
       await open('chaoxing');
+      assert.equal(await page.locator('video').evaluate(video => video.muted), false, 'fixture starts unmuted');
       const result = await command('start');
       assert.equal(result.ok, true, result.error);
       assert.equal(result.data.settings.playbackRate, 16);
+      assert.equal(result.data.snapshot.media.muted, true);
+      assert.equal(await page.locator('video').evaluate(video => video.muted), true, 'start mutes the native player');
       assert.equal(await page.locator('video').evaluate(video => video.playbackRate), 16);
       await page.waitForFunction(() => document.querySelector('video')?.ended);
       assert.equal(page.url(), initial.chaoxing);
     } finally {
       await command('stop');
       await worker.evaluate(async (courseSettings) => chrome.storage.local.set({ courseSettings }), saved);
+    }
+  });
+  await t.test('HTML document scrolls the real page to the content bottom, waits and honors auto-next off', async () => {
+    const saved = await worker.evaluate(async () => (await chrome.storage.local.get('courseSettings')).courseSettings);
+    try {
+      await worker.evaluate(async settings => chrome.storage.local.set({ courseSettings: { ...settings, autoNext: false, nextDelayMs: 2000 } }), saved);
+      const course = await open('ouchn', 'https://moodle.syxy.ouchn.cn/mod/page/view.php?id=101&layout=documentRoot');
+      assert.equal(course.snapshot.document.available, true);
+      assert.equal(course.snapshot.document.atBottom, false);
+      assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0, 'scan must not scroll');
+      assert.equal((await command('start')).ok, true);
+      await page.waitForFunction(() => document.querySelector('.generalbox').getBoundingClientRect().bottom <= innerHeight + 2);
+      assert.ok(page.url().includes('id=101'));
+      assert.equal((await state()).phase, 'readingDocument', 'bottom is not completion until the configured wait elapses');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.equal((await state()).readDocuments, 0);
+      const result = await waitForPhase('paused');
+      assert.equal(result.readDocuments, 1); assert.equal(result.watched, 0);
+      assert.equal(result.snapshot.document.atBottom, true);
+      assert.ok(page.url().includes('id=101'), 'auto-next off must not navigate');
+      assert.equal(await page.locator('#catalog').evaluate(node => node.scrollTop), 0);
+      assert.ok(await page.evaluate(() => document.scrollingElement.scrollTop < document.scrollingElement.scrollHeight - innerHeight - 100), 'stop at document bottom, not the unrelated footer');
+      await panel.waitForFunction(() => document.getElementById('course-progress-label').textContent.includes('HTML 文档'));
+      assert.equal(await panel.locator('#course-progress').getAttribute('aria-label'), '当前文档滚动进度');
+      const viewport = panel.viewportSize();
+      await panel.setViewportSize({width:320,height:800});
+      assert.equal(await panel.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      if (process.env.NEXLY_SCREENSHOT_DIR) {
+        await mkdir(process.env.NEXLY_SCREENSHOT_DIR, {recursive:true});
+        await panel.screenshot({path:join(process.env.NEXLY_SCREENSHOT_DIR,'document-panel-320.png'),fullPage:true});
+      }
+      await panel.setViewportSize(viewport);
+
+    } finally {
+      await command('stop');
+      await worker.evaluate(async courseSettings => chrome.storage.local.set({ courseSettings }), saved);
+    }
+  });
+  await t.test('nested documents reach their own bottom and continue document to document to a muted video', async () => {
+    await open('ouchn', 'https://moodle.syxy.ouchn.cn/mod/page/view.php?id=101&layout=documentNested');
+    await page.evaluate(() => sessionStorage.removeItem('__fixtureDocumentExits'));
+    assert.equal(await page.locator('.document-scroll').evaluate(node => node.scrollTop), 0);
+    assert.equal((await command('start')).ok, true);
+    const result = await waitForPhase('complete', 25000);
+    assert.equal(result.readDocuments, 2); assert.equal(result.watched, 1);
+    assert.ok(page.url().includes('id=103'));
+    assert.equal(await page.locator('video').evaluate(video => video.muted), true, 'new chapter is muted before playback too');
+    const exits = await page.evaluate(() => JSON.parse(sessionStorage.getItem('__fixtureDocumentExits') || '[]'));
+    assert.deepEqual(exits.map(item => item.id), [1, 2]);
+    assert.ok(exits.every(item => item.remaining <= 2 && item.top > 0 && item.catalogTop === 0 && item.pageTop === 0), JSON.stringify(exits));
+  });
+  await t.test('pause, stop and verification release document scrolling without navigating', async () => {
+    await open('ouchn', 'https://moodle.syxy.ouchn.cn/mod/page/view.php?id=101&layout=documentNested');
+    await command('start');
+    await page.waitForFunction(() => document.querySelector('.document-scroll').scrollTop > 0);
+    assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0, 'inner document scrolling must not move the outer page');
+    await command('pause');
+    const pausedTop = await page.locator('.document-scroll').evaluate(node => node.scrollTop);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(await page.locator('.document-scroll').evaluate(node => node.scrollTop), pausedTop);
+    assert.equal((await state()).phase, 'paused'); assert.ok(page.url().includes('id=101'));
+    await command('start'); await command('stop');
+    const stoppedTop = await page.locator('.document-scroll').evaluate(node => node.scrollTop);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(await page.locator('.document-scroll').evaluate(node => node.scrollTop), stoppedTop);
+    assert.equal((await state()).readDocuments, 0);
+    await command('start');
+    await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div data-captcha>请验证</div>'));
+    await waitForPhase('blocked');
+    const blockedTop = await page.locator('.document-scroll').evaluate(node => node.scrollTop);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(await page.locator('.document-scroll').evaluate(node => node.scrollTop), blockedTop);
+    assert.ok(page.url().includes('id=101')); assert.equal((await state()).readDocuments, 0);
+  });
+  await t.test('embedded readers and non-page resources are not treated as completed HTML documents', async () => {
+    for (const path of ['page', 'resource']) {
+      const course = await open('ouchn', `https://moodle.syxy.ouchn.cn/mod/${path}/view.php?id=101&layout=documentEmbedded`);
+      assert.equal(course.snapshot.document.available, false);
+      await command('start'); assert.equal((await state()).phase, 'paused');
+      assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
+      assert.equal((await state()).readDocuments, 0); assert.ok(page.url().includes('id=101'));
     }
   });
   await t.test('custom Moodle sidebar uses activity IDs without generic classes or current markers', async () => {
@@ -371,7 +468,9 @@ test('isolated Chrome course adapters, real playback, safe navigation, quiz read
   });
   await open('chaoxing');await command('start');await command('pause');
   assert.equal(await page.locator('video').evaluate(video => video.paused), true);
-  await command('start');await command('stop');assert.equal(await page.locator('video').evaluate(video => video.paused), true);
+  await page.locator('video').evaluate(video => { video.muted = false; });
+  await command('start');assert.equal(await page.locator('video').evaluate(video => video.muted), true, 'resume mutes again');
+  await command('stop');assert.equal(await page.locator('video').evaluate(video => video.paused), true);
   // 当前播放器之外的隐藏 frame 不可误选；多可见播放器则拒绝猜测。
   await page.evaluate(() => { const hidden=document.createElement('iframe');hidden.hidden=true;hidden.src=location.href+'&hidden-fixture=1';document.body.append(hidden); });
   await page.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('video'));

@@ -70,14 +70,14 @@
     <section class="section course-overview" aria-labelledby="course-heading">
       <div class="section-heading"><h2 id="course-heading">课程控制</h2><button id="course-scan" class="quiet" type="button">识别当前课程 ↻</button></div>
       <p class="caption">任务绑定启动时的课程页。切换标签不会重新绑定，也不会自动调用 AI。</p>
-      <div class="course-status-row"><span id="course-status" class="badge" role="status">尚未识别</span><span id="course-watched" class="caption">本次播放结束 0 段</span></div>
+      <div class="course-status-row"><span id="course-status" class="badge" role="status">尚未识别</span><span id="course-watched" class="caption">本次播放结束 0 段 · 文档到结尾 0 篇</span></div>
       <p id="course-message" class="course-message" aria-live="polite"></p>
       <div id="course-error" class="error" role="alert" hidden></div>
-      <div id="course-empty" class="course-empty"><strong>先打开已登录的课程页面</strong><p>进入视频播放页或章节目录，点击“识别当前课程”。平台改版或播放器尚未加载时，可先在原页面手动打开视频。</p></div>
+      <div id="course-empty" class="course-empty"><strong>先打开已登录的课程页面</strong><p>进入视频、国开 HTML 文档页或章节目录，点击“识别当前课程”。平台改版或播放器尚未加载时，可先在原页面手动打开视频。</p></div>
       <div id="course-current" hidden><span id="course-platform" class="caption"></span><h3 id="course-name"></h3><p id="course-chapter" class="muted"></p><progress id="course-progress" max="100" value="0" aria-label="当前视频播放进度"></progress><p id="course-progress-label" class="caption"></p></div>
       <div class="button-row"><button id="course-start" class="primary" type="button">开始课程</button><button id="course-pause" class="secondary" type="button">暂停</button><button id="course-stop" class="danger" type="button">停止</button></div>
       <div class="course-binding"><button id="course-next" class="secondary" type="button">下一章</button><span id="course-bound-tab" class="caption"></span><button id="course-focus" class="quiet" type="button">回到课程页 ↗</button></div>
-      <p class="caption">真实播放，不伪造学时；正常播放完毕不代表平台已认定完成。登录、验证码、锁定章节和考试页面均需人工处理。</p>
+      <p class="caption">静音播放视频、正常滚动支持的 HTML 文档；到结尾不代表平台认定完成。登录、验证码、锁定章节和考试页面均需人工处理。</p>
       <button id="course-settings-open" class="quiet" type="button">调整课程设置 →</button>
     </section>
     <section id="course-quiz" class="section" aria-labelledby="course-quiz-heading" hidden>
@@ -159,10 +159,10 @@
   </div><div id="settings-course" data-settings-panel="course" role="tabpanel" aria-labelledby="setting-course" hidden>
   <section class="section" aria-labelledby="course-settings-heading">
     <h2 id="course-settings-heading" tabindex="-1">网课学习设置</h2>
-    <label class="checkbox"><input id="course-auto-next" type="checkbox" checked><span>视频正常结束后尝试打开下一章节<small>只有当前章节和下一入口都明确时才继续；测验、锁定章节与不确定页面暂停等待。</small></span></label>
+    <label class="checkbox"><input id="course-auto-next" type="checkbox" checked><span>视频结束或支持的文档到底后尝试打开下一章节<small>只有当前章节和下一入口都明确时才继续；测验、锁定章节与不确定页面暂停等待。</small></span></label>
     <div class="field"><label for="course-playbackRate">播放速度 <span class="unit">倍</span></label><input id="course-playbackRate" type="number" required aria-describedby="course-rate-hint"><p id="course-rate-hint" class="caption">默认 1 倍；范围 0.5～16，步长 0.25。平台限制优先，不强制突破播放器限制。</p></div>
-    <div class="field"><label for="course-nextDelayMs">换章等待时间 <span class="unit">ms</span></label><input id="course-nextDelayMs" type="number" required aria-describedby="course-delay-hint"><p id="course-delay-hint" class="caption">默认 3000 ms；范围 0～30000 ms，步长 1000 ms。</p></div>
-    <div class="field"><label for="course-stallSeconds">无进度暂停时间 <span class="unit">秒</span></label><input id="course-stallSeconds" type="number" required aria-describedby="course-stall-hint"><p id="course-stall-hint" class="caption">默认 120 秒；范围 30～600 秒。长时间无播放进度时暂停，不反复点击。</p></div>
+    <div class="field"><label for="course-nextDelayMs">换章等待时间 <span class="unit">ms</span></label><input id="course-nextDelayMs" type="number" required aria-describedby="course-delay-hint"><p id="course-delay-hint" class="caption">默认 3000 ms；范围 0～30000 ms，步长 1000 ms。视频结束或文档正文到底后计时。</p></div>
+    <div class="field"><label for="course-stallSeconds">无进度暂停时间 <span class="unit">秒</span></label><input id="course-stallSeconds" type="number" required aria-describedby="course-stall-hint"><p id="course-stall-hint" class="caption">默认 120 秒；范围 30～600 秒。长时间无播放或文档滚动进度时暂停，不反复点击。</p></div>
     <label class="checkbox"><input id="course-auto-preview" type="checkbox"><span>发现唯一随堂题时自动预览一次答案<small>默认关闭。需同意 AI 数据使用并配置服务商，可能产生费用；不会自动填写、提交或重复请求同一题。</small></span></label>
     <p class="caption">设置在下次开始或继续课程时生效。播放与答题互斥；课程状态只保存在当前浏览器会话，关闭/重载后需人工继续。</p>
   </section>

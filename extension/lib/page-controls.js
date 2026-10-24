@@ -1,7 +1,7 @@
 /** 注入题目所在的隔离世界；保持 closed Shadow DOM，不向网页开放任务入口。 */
 export function installPageControls(initialState, appearance = { opacity: 90 }, initialPosition = { x: 1, y: 1 }, ownerToken = null) {
   const previous = globalThis.__nexlyPageControls;
-  if (previous?.revision === 7 && previous.host?.isConnected) {
+  if (previous?.revision === 8 && previous.host?.isConnected) {
     previous.ownerToken = ownerToken;
     previous.paint(initialState); previous.configure(appearance, initialPosition); return { ok: true };
   }
@@ -14,7 +14,6 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
   style.textContent = `
     :host{all:initial}*{box-sizing:border-box}[hidden]{display:none!important}
     .widget{color:#161616;font:12px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;letter-spacing:.16px;opacity:var(--opacity,.9);transition:opacity .14s}
-    .widget.open{opacity:1}
     button{font:inherit;border:1px solid #d0d0d0;border-radius:4px;background:#fff;color:#161616;min-height:36px;padding:6px 10px;cursor:pointer}
     button:hover:not(:disabled){background:#f4f4f4}button:disabled{opacity:.4;cursor:not-allowed}
     button:focus-visible{outline:2px solid #0f62fe;outline-offset:2px}
@@ -122,10 +121,13 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     questionLabel.textContent = value.questionTitle || ''; questionLabel.hidden = !value.questionTitle;
     const error = localError || (!pendingAction && value.error);
     status.className = `status${error ? ' error' : ''}`;
-    const coursePhases = { idle: '课程待识别', ready: '课程已识别', starting: '正在启动播放', playing: '正在播放', navigating: '正在切换章节', awaitingQuiz: '随堂练习待人工确认', complete: '已到目录末尾', blocked: '等待平台验证' };
+    const coursePhases = { idle: '课程待识别', ready: '课程已识别', starting: '正在启动播放', playing: '正在播放', readingDocument: '正在滚动文档', navigating: '正在切换章节', awaitingQuiz: '随堂练习待人工确认', complete: '已到目录末尾', blocked: '等待平台验证' };
     const phaseText = course && coursePhases[value.phase] || phases[value.phase] || value.phase;
-    courseProgress.hidden = !course || !value.media?.duration;
-    if (!courseProgress.hidden) { progress.value = Math.max(0, Math.min(1, value.media.currentTime / value.media.duration)); progressLabel.textContent = `${Math.round(progress.value * 100)}% · ${value.media.rate}× · 本次播放结束 ${value.watched || 0} 段`; }
+    const readingDocument = course && !value.media?.count && value.document?.available;
+    courseProgress.hidden = !course || !value.media?.duration && !readingDocument;
+    progress.setAttribute('aria-label', readingDocument ? '当前文档滚动进度' : '当前视频播放进度');
+    if (readingDocument) { progress.value = value.document.progress; progressLabel.textContent = `文档滚动 ${Math.round(progress.value * 100)}% · 已到结尾 ${value.readDocuments || 0} 篇`; }
+    else if (!courseProgress.hidden) { progress.value = Math.max(0, Math.min(1, value.media.currentTime / value.media.duration)); progressLabel.textContent = `${Math.round(progress.value * 100)}% · ${value.media.rate}×${value.media.muted ? ' · 静音' : ''} · 本次播放结束 ${value.watched || 0} 段`; }
     const elapsedText = value.phase === 'solving' && value.elapsedSeconds ? ` · ${value.elapsedSeconds} 秒` : '';
     const typingText = value.typingProgress ? ` · ${value.typingProgress.written}/${value.typingProgress.total}` : '';
     const completedText = value.completed ? ` · 已填写 ${value.completed} 题` : '';
@@ -258,7 +260,7 @@ export function installPageControls(initialState, appearance = { opacity: 90 }, 
     disposed = true; commandEpoch++; observer.disconnect(); clearTimeout(syncTimer); clearTimeout(collapseTimer);
     window.removeEventListener('resize', layout); document.removeEventListener('change', onChange, true); chrome.runtime.onMessage.removeListener(listener); host.remove();
   };
-  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 7, ownerToken };
+  globalThis.__nexlyPageControls = { host, paint, configure, listener, cleanup, revision: 8, ownerToken };
   configure(appearance, initialPosition); paint(initialState);
   return { ok: true };
 }

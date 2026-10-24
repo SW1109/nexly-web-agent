@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const enabled = process.env.NEXLY_PANEL_BROWSER_TEST === '1' || process.env.NEXLY_BROWSER_TEST === '1';
 const fixture = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>In-page control regression</title><body><p>练习页面</p>
@@ -45,7 +46,7 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.waitForFunction(() => window.__nexlyPageControls?.revision === 7);
+  await page.waitForFunction(() => window.__nexlyPageControls?.revision === 8);
   const status = () => page.evaluate(() => window.__testRoot.querySelector('.status').textContent);
   const buttons = () => page.evaluate(() => Object.fromEntries([...window.__testRoot.querySelectorAll('button')].map(button => [button.textContent, button.disabled])));
   async function hoverLauncher() {
@@ -59,6 +60,24 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
     await page.mouse.click(point.x, point.y);
   }
 
+  await t.test('icon and hover popover share one opacity setting, including live changes while expanded', async () => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const opacity = () => page.evaluate(() => {
+      const root = window.__testRoot, widget = root.querySelector('.widget'), popover = root.querySelector('.popover');
+      return { widget: Number(getComputedStyle(widget).opacity), popover: Number(getComputedStyle(popover).opacity), expanded: root.querySelector('.launcher').getAttribute('aria-expanded') };
+    });
+    await page.evaluate(() => window.__nexlyPageControls.configure({ opacity: 40 }));
+    assert.equal((await opacity()).widget, 0.4);
+    await hoverLauncher();
+    assert.deepEqual(await opacity(), { widget: 0.4, popover: 1, expanded: 'true' });
+    await page.evaluate(() => window.__nexlyPageControls.configure({ opacity: 65 }));
+    assert.equal((await opacity()).widget, 0.65);
+    assert.equal((await opacity()).popover, 1, 'the child stays visible and must not multiply opacity a second time');
+    await page.mouse.move(2, 2);
+    await page.waitForFunction(() => window.__testRoot.querySelector('.launcher').getAttribute('aria-expanded') === 'false');
+    assert.equal((await opacity()).widget, 0.65);
+    await page.evaluate(() => window.__nexlyPageControls.configure({ opacity: 90 }));
+  });
   await t.test('closed Shadow DOM is retained and synthetic clicks never dispatch commands', async () => {
     const boundary = await page.evaluate(() => ({ mode: window.__testRoot.mode, exposed: document.querySelector('[data-nexly-controls]').shadowRoot !== null }));
     assert.deepEqual(boundary, { mode: 'closed', exposed: false });
@@ -181,6 +200,23 @@ test('in-page controls use trusted actions, preserve recovery errors and stop pe
       await page.setViewportSize({width,height:700}); await hoverLauncher();
       const rect=await page.evaluate(()=>{const r=window.__testRoot.querySelector('.popover').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,w:innerWidth,h:innerHeight}});
       assert.ok(rect.left>=0&&rect.right<=rect.w&&rect.top>=0&&rect.bottom<=rect.h);
+    }
+  });
+  await t.test('document mode exposes scroll progress and retains whole-widget opacity on narrow and wide screens', async () => {
+    await page.evaluate(() => {
+      window.__nexlyPageControls.configure({opacity:65});
+      window.__nexlyPageControls.paint({mode:'course',bound:true,phase:'readingDocument',busy:true,operation:'',hasNext:true,questionTitle:'学什么 · 课程导学',message:'正在滚动 HTML 文档',media:{count:0,duration:0},document:{available:true,progress:0.6,atBottom:false},readDocuments:2});
+    });
+    assert.equal(await page.evaluate(() => window.__testRoot.querySelector('.progress span').textContent), '文档滚动 60% · 已到结尾 2 篇');
+    assert.equal(await page.evaluate(() => window.__testRoot.querySelector('progress').getAttribute('aria-label')), '当前文档滚动进度');
+    for (const width of [320,1280]) {
+      await page.setViewportSize({width,height:700}); await hoverLauncher();
+      const value = await page.evaluate(() => {const rect=window.__testRoot.querySelector('.popover').getBoundingClientRect();return {opacity:getComputedStyle(window.__testRoot.querySelector('.widget')).opacity,left:rect.left,right:rect.right}});
+      assert.equal(value.opacity, '0.65'); assert.ok(value.left>=0&&value.right<=width);
+      if (process.env.NEXLY_SCREENSHOT_DIR) {
+        await mkdir(process.env.NEXLY_SCREENSHOT_DIR, {recursive:true});
+        await page.screenshot({path:join(process.env.NEXLY_SCREENSHOT_DIR,`document-controls-${width}.png`)});
+      }
     }
   });
   assert.deepEqual(errors, []);

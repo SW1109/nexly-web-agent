@@ -109,6 +109,35 @@ export async function coursePageAction(action, payload) {
       const candidates = all(platform.questions).filter((node) => !node.matches('.que.description'));
       return candidates.filter((node) => !candidates.some((other) => node !== other && node.contains(other))).slice(0, 100);
     };
+    // 只接受 Moodle 的 HTML 页面正文；PDF、跨域阅读器和作业不靠滚动外壳冒充已读。
+    const documentView = (videos = all('video'), questions = questionNodes()) => {
+      const empty = { available: false, id: '', signature: '', atBottom: false, progress: 0, layout: '' };
+      if (platform.id !== 'ouchn' || !/^\/mod\/page\/view\.php$/.test(location.pathname) || videos.length || questions.length) return { info: empty, scrolls: [] };
+      const roots = all('#region-main .generalbox,#region-main .activity-content').filter((node) => text(node));
+      const leaves = roots.filter((node) => !roots.some((other) => other !== node && node.contains(other)));
+      if (leaves.length !== 1) return { info: empty, scrolls: [] };
+      const root = leaves[0];
+      if (all('iframe,frame,embed,object,canvas,input,textarea,[contenteditable="true"],audio', root).length) return { info: empty, scrolls: [] };
+      // 等正文图片完成布局后再确认底部，避免懒加载内容刚出现就换章。
+      const imagesReady = all('img', root).every((image) => image.complete);
+      const scrolls = [];
+      let visibleBottom = root.getBoundingClientRect().bottom;
+      for (let node = root; node; node = node.parentElement) {
+        const max = Math.max(0, node.scrollHeight - node.clientHeight), overflow = getComputedStyle(node).overflowY;
+        if (max > 2 && /^(hidden|clip)$/.test(overflow)) return { info: empty, scrolls: [] };
+        const viewport = node === document.scrollingElement, edge = viewport ? 0 : node.getBoundingClientRect().top + node.clientTop;
+        if (max > 2 && (viewport || /auto|scroll|overlay/.test(overflow))) {
+          const bottom = node === root ? max : visibleBottom - edge + node.scrollTop - node.clientHeight;
+          scrolls.push({ node, target: Math.min(max, Math.max(0, bottom)) });
+        }
+        // 内层阅读区已经裁剪正文时，外层只需显示该阅读区，不能拿未裁剪的全文高度误滚整页。
+        if (!viewport && /auto|scroll|overlay|hidden|clip/.test(overflow)) visibleBottom = Math.min(visibleBottom, edge + node.clientHeight);
+      }
+      const extent = scrolls.reduce((sum, entry) => sum + entry.target, 0);
+      const offset = scrolls.reduce((sum, entry) => sum + Math.min(entry.target, Math.max(0, entry.node.scrollTop)), 0);
+      return { info: { available: true, id: identity(root), signature: `${identity(root)}|${hash(text(root))}`, atBottom: imagesReady && scrolls.every(({ node, target }) => target - node.scrollTop <= 2),
+        progress: extent > 0 ? Math.min(1, offset / extent) : 1, layout: [root.scrollHeight, root.clientHeight, ...scrolls.flatMap(({ node, target }) => [node.clientHeight, target])].join('|') }, scrolls };
+    };
     const read = () => {
       const chapters = chapterList();
       const questions = questionNodes();
@@ -122,7 +151,8 @@ export async function coursePageAction(action, payload) {
         gate: gate(), shown: inFrame(), children: [...document.querySelectorAll('iframe,frame')].map((node) => ({ url: node.src, shown: visible(node) })),
         chapters: chapters.map(publicChapter), pageResource, nextChapter: nextChapter() ? publicChapter(nextChapter()) : null,
         questions: questions.map((node, index) => ({ key: `question-${hash(`${index}|${text(node).slice(0, 800)}`)}`, title: text(node).slice(0, 140), index })),
-        media: { count: videos.length, id: video ? identity(video) : '', signature: video ? `${identity(video)}|${hash(video.currentSrc || video.getAttribute('src') || '')}` : '', duration, currentTime, paused: video?.paused ?? true, ended: Boolean(video?.ended && duration > 0 && currentTime >= duration - 1), ready: Boolean(video && video.readyState >= 2 && duration > 0), rate: Number.isFinite(video?.playbackRate) ? video.playbackRate : 1 }
+        document: documentView(videos, questions).info,
+        media: { muted: Boolean(video?.muted), count: videos.length, id: video ? identity(video) : '', signature: video ? `${identity(video)}|${hash(video.currentSrc || video.getAttribute('src') || '')}` : '', duration, currentTime, paused: video?.paused ?? true, ended: Boolean(video?.ended && duration > 0 && currentTime >= duration - 1), ready: Boolean(video && video.readyState >= 2 && duration > 0), rate: Number.isFinite(video?.playbackRate) ? video.playbackRate : 1 }
       };
     };
     const release = (pause = false) => {
@@ -148,12 +178,13 @@ export async function coursePageAction(action, payload) {
       (chapter.anchor || chapter.node).click();
       return { ok: true, key: chapter.key };
     }
-    if (!['play', 'watchNavigation'].includes(action)) throw new Error('不支持的课程操作');
+    if (!['play', 'readDocument', 'watchNavigation'].includes(action)) throw new Error('不支持的课程操作');
     const snapshot = read();
     if (snapshot.gate) throw new Error(snapshot.gate);
     if (!snapshot.shown) throw new Error('课程播放器所在区域已隐藏，请先在原页面显示它');
     if (action === 'play' && (snapshot.questions.length || snapshot.media.count !== 1)) throw new Error(snapshot.questions.length ? '检测到随堂练习，请先人工确认题目' : '未找到唯一可见播放器，请在原页面打开视频章节');
     if (action === 'play' && (!snapshot.media.ready || snapshot.media.ended)) throw new Error(snapshot.media.ended ? '当前视频已经结束，请选择下一章节' : '播放器正在加载，请稍后继续');
+    if (action === 'readDocument' && !snapshot.document.available) throw new Error('当前内容不是可自动滚动的唯一 HTML 文档，请人工阅读 PDF、附件或嵌入式阅读器');
     release(false);
     const video = all('video').length === 1 ? all('video')[0] : null;
     const observer = { token: payload.runToken, video, listeners: [], timer: null, sentEnd: false, started: Date.now(), progressAt: Date.now(), lastTime: video?.currentTime || 0, lastSent: 0, pending: false };
@@ -172,13 +203,31 @@ export async function coursePageAction(action, payload) {
       const current = read();
       if (current.gate) { void send('blocked'); return; }
       if (action === 'watchNavigation') {
-        const ready = current.questions.length || current.media.ready && !current.media.ended && current.media.signature !== payload.previousSignature;
+        const ready = current.questions.length || current.document.available && current.document.signature !== payload.previousDocumentSignature || current.media.ready && !current.media.ended && current.media.signature !== payload.previousSignature;
         const arrived = current.pageResource && current.pageResource === payload.expectedResource || current.chapters.some((chapter) => chapter.current && (chapter.key === payload.expectedKey || chapter.resource && chapter.resource === payload.expectedResource));
         if (ready && arrived) void send('navigated');
         else if (Date.now() - observer.started > 20000) void send('navigationTimeout');
         return;
       }
       if (current.questions.length) { void send('quiz'); return; }
+      if (action === 'readDocument') {
+        if (!current.document.available || current.document.signature !== snapshot.document.signature) { void send('changed'); return; }
+        const view = documentView();
+        if (observer.layout !== view.info.layout || !view.info.atBottom) { observer.bottomAt = null; observer.layout = view.info.layout; }
+        if (view.info.atBottom) {
+          observer.bottomAt ??= Date.now();
+          if (Date.now() - observer.bottomAt >= payload.settings.nextDelayMs) { void send('documentEnd'); return; }
+        } else {
+          // 只滚动正文及其滚动祖先，不动左侧课程目录；正常 scrollTop 会触发浏览器原生滚动。
+          for (const { node, target } of view.scrolls) node.scrollTop = Math.min(target, node.scrollTop + Math.max(1, node.clientHeight * 0.8));
+        }
+        const position = view.scrolls.map(({ node }) => node.scrollTop).join('|');
+        if (observer.position !== position || view.info.atBottom) { observer.position = position; observer.progressAt = Date.now(); }
+        if (Date.now() - observer.progressAt > payload.settings.stallSeconds * 1000) { void send('stalled'); return; }
+        if (Date.now() - observer.lastSent >= 1000) { observer.lastSent = Date.now(); void send('progress'); }
+        return;
+      }
+
       if (current.media.count !== 1 || current.media.id !== snapshot.media.id || current.media.signature !== snapshot.media.signature) { void send('changed'); return; }
       if (current.media.ended) {
         if (!observer.sentEnd) {
@@ -201,6 +250,8 @@ export async function coursePageAction(action, payload) {
       }
     }
     if (action === 'play') {
+      // 每次启动/恢复及进入新视频前先静音，不改全局标签音量，也不反复覆盖用户手动取消静音。
+      video.muted = true;
       video.playbackRate = payload.settings.playbackRate;
       try { await video.play(); }
       catch { if (memo.observer === observer) release(false); throw new Error('浏览器或平台阻止了播放，请在课程页手动点播放后再继续'); }

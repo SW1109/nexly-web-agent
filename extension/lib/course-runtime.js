@@ -62,15 +62,17 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
     const gate = visible.map((entry) => entry.snapshot.gate).find(Boolean) || '';
     const quizzes = visible.filter((entry) => entry.snapshot.questions?.length);
     const media = visible.filter((entry) => entry.snapshot.media?.count);
+    const documents = visible.filter((entry) => entry.snapshot.document?.available);
     if (quizzes.length > 1) throw new Error('多个可见区域同时包含练习题，请先在原页面保留一个练习区域');
     if (!quizzes.length && (media.length > 1 || media[0]?.snapshot.media.count > 1)) throw new Error('页面存在多个可见播放器，请人工选定一个视频后重试');
+    if (!quizzes.length && !media.length && documents.length > 1) throw new Error('多个可见区域同时包含文档，请人工保留唯一正文后继续');
     const directory = [...visible].sort((a, b) => b.snapshot.chapters.length - a.snapshot.chapters.length)[0];
     const navigation = visible.find((entry) => entry === directory && entry.snapshot.nextChapter) || visible.find((entry) => entry.frame.frameId === 0 && entry.snapshot.nextChapter);
-    const selected = quizzes[0] || media[0] || directory;
+    const selected = quizzes[0] || media[0] || documents[0] || directory;
     // iframe 原始 URL 仅用于这次可见性关联，可能含令牌；不将其写入 session 或广播给面板。
     const { children, ...selectedSnapshot } = selected.snapshot;
     const snapshot = { ...selectedSnapshot, gate, title: directory.snapshot.title || selected.snapshot.title, chapters: directory.snapshot.chapters, pageResource: directory.snapshot.pageResource || selected.snapshot.pageResource || '', nextChapter: navigation?.snapshot.nextChapter || null, questions: quizzes[0]?.snapshot.questions || [] };
-    return { tabId, platformId: definition.id, snapshot, targets: { media: media[0]?.target || null, quiz: quizzes[0]?.target || null, directory: directory?.target || null, navigation: navigation?.target || null } };
+    return { tabId, platformId: definition.id, snapshot, targets: { document: documents[0]?.target || null, media: media[0]?.target || null, quiz: quizzes[0]?.target || null, directory: directory?.target || null, navigation: navigation?.target || null } };
   }
   async function updateCapture(tabId, expected) {
     const result = await capture(tabId); assertEpoch(expected);
@@ -106,6 +108,13 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
       }
       return state;
     }
+    if (!state.snapshot.media.count && state.snapshot.document?.available) {
+      const target = state.targets.document, runToken = crypto.randomUUID();
+      watcher = { ...target, runToken };
+      await publish({ phase: 'readingDocument', running: true, error: '' }, '正在滚动 HTML 文档；到达正文底部并按换章等待时间停留后继续，不修改平台学习记录。'); assertEpoch(expected);
+      await action(target, 'readDocument', { runToken }); assertEpoch(expected);
+      return state;
+    }
     if (state.snapshot.media.ended) return advance(expected, false);
     if (state.snapshot.media.count === 1 && !state.snapshot.media.ready) {
       await publish({ phase: 'starting', running: true }, '播放器正在加载，最多等待 15 秒；可随时暂停或停止。'); assertEpoch(expected);
@@ -118,12 +127,12 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
       }
       if (state.snapshot.media.ended) return advance(expected, false);
     }
-    if (!state.snapshot.media.ready) return pause('未找到已加载的唯一视频；请在平台上打开视频或完成文档阅读，再点击继续。');
+    if (!state.snapshot.media.ready) return pause('未找到已加载的唯一视频或可滚动 HTML 文档；PDF、附件与嵌入式阅读器请人工阅读后换章。');
     const runToken = crypto.randomUUID(), target = state.targets.media;
     watcher = { ...target, runToken };
     await publish({ phase: 'starting', running: true, error: '' }, '正在启动当前视频，使用平台原播放器正常播放。'); assertEpoch(expected);
-    await action(target, 'play', { runToken }); assertEpoch(expected);
-    await publish({ phase: 'playing', running: true, operation: '' }, '正在播放；不会修改播放时长、学习记录、页面焦点或平台验证机制。');
+    const playing = await action(target, 'play', { runToken }); assertEpoch(expected);
+    await publish({ phase: 'playing', running: true, operation: '', snapshot: { ...state.snapshot, media: playing.media } }, '正在静音播放；不会修改播放时长、学习记录、页面焦点或平台验证机制。');
     return state;
   }
   async function selectChapter(key, expected, autoplay) {
@@ -132,14 +141,15 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
     const chapter = fromDirectory || (state.snapshot.nextChapter?.key === key ? state.snapshot.nextChapter : null);
     if (!chapter) throw new Error('章节目录已变化，请重新识别');
     if (chapter.locked) throw new Error('章节尚未解锁，请按平台规则完成前置任务');
+    const previousDocumentSignature = state.snapshot.document?.signature || '', previousDocument = { ...state.targets.document, signature: previousDocumentSignature };
     const previousSignature = state.snapshot.media.signature, previousMedia = { ...state.targets.media, signature: previousSignature };
     await stopWatcher(true); assertEpoch(expected);
     const target = (fromDirectory ? state.targets.directory : state.targets.navigation) || state.targets.directory, runToken = crypto.randomUUID();
-    await publish({ phase: 'navigating', running: autoplay, navigation: { key, title: chapter.title, resource: chapter.resource || '', previousMedia, autoplay }, error: '' }, `正在打开：${chapter.title}。`); assertEpoch(expected);
+    await publish({ phase: 'navigating', running: autoplay, navigation: { key, title: chapter.title, resource: chapter.resource || '', previousMedia, previousDocument, autoplay }, error: '' }, `正在打开：${chapter.title}。`); assertEpoch(expected);
     await action(target, 'selectChapter', { key }); assertEpoch(expected);
     watcher = { ...target, runToken };
     // 完整导航由 webNavigation 恢复；SPA 导航由页内观察器等待新播放器，绝不循环连点目录。
-    await action(target, 'watchNavigation', { runToken, expectedKey: key, expectedResource: chapter.resource || '', previousSignature }).catch(() => {}); assertEpoch(expected);
+    await action(target, 'watchNavigation', { runToken, expectedKey: key, expectedResource: chapter.resource || '', previousSignature, previousDocumentSignature }).catch(() => {}); assertEpoch(expected);
     // 导航完成事件可能早于 loadeddata；在有限窗口内等真实播放器就绪，不重复点击下一章。
     navigationPoll = setInterval(() => { if (epoch === expected) void navigate(state.tabId); }, 1000);
     navigationTimer = setTimeout(() => {
@@ -154,6 +164,10 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
   }
   function destinationReady() {
     if (state.snapshot.questions.length || state.snapshot.gate) return true;
+    if (!state.snapshot.media.count && state.snapshot.document?.available) {
+      const previous = state.navigation?.previousDocument, target = state.targets.document;
+      return !previous || previous.documentId !== target?.documentId || previous.frameId !== target?.frameId || previous.signature !== state.snapshot.document.signature;
+    }
     if (!state.snapshot.media.ready || state.snapshot.media.ended) return false;
     const previous = state.navigation?.previousMedia, target = state.targets.media;
     return !previous || previous.documentId !== target?.documentId || previous.frameId !== target?.frameId || previous.signature !== state.snapshot.media.signature;
@@ -161,7 +175,7 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
   async function advance(expected, count, manual = false) {
     if (count) await publish({ watched: state.watched + 1 });
     const current = state.snapshot.chapters.filter((item) => item.current);
-    if (!manual && !state.settings.autoNext) return pause('当前视频已播放结束，连续播放已关闭，请人工换章。');
+    if (!manual && !state.settings.autoNext) return pause('当前内容已到结尾，连续换章已关闭，请人工换章。');
     const next = current.length === 1 ? state.snapshot.chapters[current[0].index + 1] || state.snapshot.nextChapter : state.snapshot.nextChapter;
     if (!next) {
       if (current.length !== 1) return pause('无法唯一确认当前章节，也未找到唯一安全的“下一页”链接；请在目录中人工选择后重新识别。');
@@ -194,7 +208,7 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
         if (tab?.id == null) throw new Error('请先打开课程网页');
         await stopWatcher(false); assertEpoch(expected);
         await updateCapture(tab.id, expected);
-        await publish({ phase: state.snapshot.gate ? 'blocked' : 'ready', navigation: null, running: false }, state.snapshot.gate || `已识别 ${platform().name}；读取到 ${state.snapshot.chapters.length} 个目录项。点击开始后才会播放。`);
+        await publish({ phase: state.snapshot.gate ? 'blocked' : 'ready', navigation: null, running: false }, state.snapshot.gate || `已识别 ${platform().name}；读取到 ${state.snapshot.chapters.length} 个目录项。点击开始后才会播放或滚动文档。`);
       } else {
         if (state.tabId == null) throw new Error('请先点击“识别当前课程”');
         await updateCapture(state.tabId, expected);
@@ -229,6 +243,11 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
         if (!state.snapshot.media.ended || !state.running || state.phase !== 'playing') return true;
         await stopWatcher(false); assertEpoch(expected);
         await advance(expected, true);
+      } else if (message.event === 'documentEnd') {
+        if (!state.running || state.phase !== 'readingDocument' || !state.snapshot.document?.available || !state.snapshot.document.atBottom || state.snapshot.gate || state.snapshot.questions.length) return true;
+        await stopWatcher(false); assertEpoch(expected);
+        await publish({ readDocuments: (state.readDocuments || 0) + 1 }); assertEpoch(expected);
+        await advance(expected, false);
       } else if (message.event === 'quiz') {
         await stopWatcher(true); assertEpoch(expected);
         await begin(expected);
@@ -239,7 +258,7 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
         if (autoplay) await begin(expected);
         else await publish({ phase: 'ready', running: false, navigation: null }, '章节已打开；确认页面后可点击开始播放。');
       } else {
-        const messages = { blocked: state.snapshot.gate || '平台要求人工确认，请处理后继续。', playerPaused: '页面或播放器已暂停；请在原页面确认后继续，不会强制恢复播放。', stalled: '视频长时间没有进度，已暂停；请检查网络或播放器。', mediaError: '播放器报告加载错误，请在原页面检查后重试。', changed: '播放器或章节发生变化，已暂停；请核对后继续。', navigationTimeout: '切换后未确认新章节，请人工核对后重新识别。' };
+        const messages = { blocked: state.snapshot.gate || '平台要求人工确认，请处理后继续。', playerPaused: '页面或播放器已暂停；请在原页面确认后继续，不会强制恢复播放。', stalled: '视频播放或文档滚动长时间没有进度，已暂停；请检查页面加载与滚动区域。', mediaError: '播放器报告加载错误，请在原页面检查后重试。', changed: '播放器或章节发生变化，已暂停；请核对后继续。', navigationTimeout: '切换后未确认新章节，请人工核对后重新识别。' };
         await pause(messages[message.event] || '课程状态发生变化，请确认后继续。', message.event === 'blocked' ? 'blocked' : 'paused');
       }
       return true;
@@ -271,9 +290,12 @@ export function createCourseRuntime({ chromeApi = globalThis.chrome, practiceBus
         const previous = state;
         await updateCapture(tabId, expected);
         // onCompleted 常晚于用户点击开始，子 frame 也会触发；同一播放器/文档的迟到通知不能误停任务。
-        const sameTarget = state.targets.media?.documentId === previous.targets.media?.documentId && state.targets.media?.frameId === previous.targets.media?.frameId;
+        const target = state.targets.media || state.targets.document || state.targets.quiz || state.targets.directory;
+        const previousTarget = previous.targets.media || previous.targets.document || previous.targets.quiz || previous.targets.directory;
+        const sameTarget = target?.documentId === previousTarget?.documentId && target?.frameId === previousTarget?.frameId;
         const sameChapter = JSON.stringify(state.snapshot.chapters.filter((item) => item.current).map((item) => item.resource || item.key)) === JSON.stringify(previous.snapshot.chapters.filter((item) => item.current).map((item) => item.resource || item.key));
-        if (!sameTarget || !sameChapter || state.snapshot.gate || state.snapshot.questions.length || state.snapshot.media.signature !== previous.snapshot.media.signature) await pause('课程页面发生导航，任务已暂停；请核对页面后点击继续。');
+        if (state.snapshot.gate) await pause(state.snapshot.gate, 'blocked');
+        else if (!sameTarget || !sameChapter || state.snapshot.questions.length || state.snapshot.media.signature !== previous.snapshot.media.signature || state.snapshot.document?.signature !== previous.snapshot.document?.signature) await pause('课程页面发生导航，任务已暂停；请核对页面后点击继续。');
       } catch (error) { if (epoch === expected) await pause(error.message, 'error'); }
       finally { if (epoch === expected) operation = false; }
     } else {

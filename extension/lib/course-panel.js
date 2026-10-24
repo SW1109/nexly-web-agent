@@ -5,7 +5,7 @@ export function createCoursePanel({ onPractice, onChange = () => {}, onInvalid =
   const $ = (id) => document.getElementById(id);
   const log = createTaskLog({ list: $('course-log'), count: $('course-log-count'), jump: $('course-log-latest') });
   let state = courseSession(), pending = false, practiceBusy = false, accepted = false, settingsBusy = false, failure = '', operationEpoch = 0;
-  const labels = { idle: '尚未识别', ready: '准备就绪', starting: '准备播放', playing: '正常播放中', paused: '已暂停', blocked: '等待人工处理', awaitingQuiz: '等待随堂练习', navigating: '正在切换章节', complete: '已到目录末尾', error: '需要处理', stopped: '已停止', interrupted: '任务已中断' };
+  const labels = { idle: '尚未识别', ready: '准备就绪', starting: '准备播放', playing: '正常播放中', readingDocument: '正在滚动文档', paused: '已暂停', blocked: '等待人工处理', awaitingQuiz: '等待随堂练习', navigating: '正在切换章节', complete: '已到目录末尾', error: '需要处理', stopped: '已停止', interrupted: '任务已中断' };
   const time = (seconds) => { const value = Math.max(0, Math.floor(seconds || 0)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, '0')}`; };
   const tell = (message) => { $('course-error').textContent = message || ''; $('course-error').hidden = !message; };
   async function command(action, data = {}) {
@@ -37,11 +37,13 @@ export function createCoursePanel({ onPractice, onChange = () => {}, onInvalid =
       const current = snapshot.chapters.filter((item) => item.current);
       $('course-chapter').textContent = current.length === 1 ? current[0].title : snapshot.nextChapter ? '目录未定位当前章节，将使用平台唯一的“下一页”活动链接' : '当前章节尚未唯一确认；不自动猜测下一章';
       const media = snapshot.media;
-      $('course-progress').value = media.duration > 0 ? Math.min(100, media.currentTime / media.duration * 100) : 0;
-      $('course-progress-label').textContent = media.count === 1 ? `${time(media.currentTime)} / ${time(media.duration)} · ${media.rate}×` : snapshot.questions.length ? '已识别练习题，等待处理' : '请先在原页面打开视频';
+      const documentView = !media.count && snapshot.document?.available;
+      $('course-progress').setAttribute('aria-label', documentView ? '当前文档滚动进度' : '当前视频播放进度');
+      $('course-progress').value = documentView ? snapshot.document.progress * 100 : media.duration > 0 ? Math.min(100, media.currentTime / media.duration * 100) : 0;
+      $('course-progress-label').textContent = media.count === 1 ? `${time(media.currentTime)} / ${time(media.duration)} · ${media.rate}×${media.muted ? ' · 静音' : ''}` : documentView ? `HTML 文档 · 已滚动 ${Math.round(snapshot.document.progress * 100)}%${snapshot.document.atBottom ? ' · 正文已到底' : ''}` : snapshot.questions.length ? '已识别练习题，等待处理' : '请先在原页面打开视频或支持的 HTML 文档';
     }
-    $('course-watched').textContent = `本次播放结束 ${state.watched || 0} 段`;
-    $('course-directory-empty').textContent = snapshot?.nextChapter ? '未读取到完整目录，已找到平台唯一的“下一页”活动链接；播放结束后可继续换章。' : '尚未读到目录。可在原页面展开章节列表后重新识别；没有唯一安全目标时不会猜测下一章。';
+    $('course-watched').textContent = `本次播放结束 ${state.watched || 0} 段 · 文档到结尾 ${state.readDocuments || 0} 篇`;
+    $('course-directory-empty').textContent = snapshot?.nextChapter ? '未读取到完整目录，已找到平台唯一的“下一页”活动链接；内容到结尾后可继续换章。' : '尚未读到目录。可在原页面展开章节列表后重新识别；没有唯一安全目标时不会猜测下一章。';
     $('course-chapter-count').textContent = `${snapshot?.chapters.length || 0} 项`;
     const chapters = snapshot?.chapters || [], signature = JSON.stringify([chapters, active, practiceBusy]);
     if ($('course-chapters').dataset.signature !== signature) {

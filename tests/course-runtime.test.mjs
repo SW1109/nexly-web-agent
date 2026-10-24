@@ -27,7 +27,7 @@ function fixture(options = {}) {
   };
   const runtime = createCourseRuntime({ chromeApi, practiceBusy: () => busy, solveQuiz: async (request) => { solves.push(request); } });
   const sender = { tab: { id: 7 }, frameId: 0, documentId: 'document-1', url: 'https://mooc1.chaoxing.com/mycourse/studentstudy' };
-  const runToken = () => calls.findLast((call) => ['play', 'watchNavigation'].includes(call.action))?.payload.runToken;
+  const runToken = () => calls.findLast((call) => ['play', 'readDocument', 'watchNavigation'].includes(call.action))?.payload.runToken;
   return { runtime, calls, solves, stored, messages, page, sender, chromeApi, runToken, setBusy(value) { busy = value; }, setActive(value) { active = value; }, setPermission(value) { permission = value; }, setPlayGate(value) { playGate = value; } };
 }
 const until = async (predicate) => { for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 2)); } throw new Error('course state transition timed out'); };
@@ -257,4 +257,88 @@ test('loading has a bounded deadline and never opens an unrelated chapter', asyn
   assert.equal(f.runtime.state.phase, 'paused');
   assert.equal(f.runtime.busy, false);
   assert.equal(f.calls.some(item => ['play','selectChapter'].includes(item.action)), false);
+});
+
+
+test('HTML document scanning is read-only, needs explicit start and honors autoNext without counting a video', async () => {
+  const f = fixture({ settings: { ...COURSE_SETTINGS, autoNext: false }, snapshot: { media: { count: 0, signature: '', ready: false }, document: { available: true, id: 'article-1', signature: 'article-1|text', atBottom: false, progress: 0 } } });
+  await f.runtime.handle({ action: 'scan' });
+  assert.equal(f.calls.some(call => call.action === 'readDocument'), false);
+  await f.runtime.handle({ action: 'start' });
+  assert.equal(f.runtime.state.phase, 'readingDocument'); assert.equal(f.runtime.state.running, true);
+  assert.equal(f.calls.find(call => call.action === 'readDocument').payload.settings.nextDelayMs, COURSE_SETTINGS.nextDelayMs);
+  const token = f.runToken();
+  await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender);
+  assert.equal(f.runtime.state.phase, 'readingDocument'); assert.equal(f.runtime.state.readDocuments, 0);
+  f.page.document.atBottom = true;
+  await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender);
+  assert.equal(f.runtime.state.phase, 'paused'); assert.equal(f.runtime.state.readDocuments, 1);
+  assert.equal(f.runtime.state.watched, 0); assert.equal(f.calls.some(call => call.action === 'selectChapter'), false);
+  assert.deepEqual(f.solves, []);
+});
+
+test('video to document to video continues automatically only after destination content is ready', async () => {
+  const f = fixture();
+  f.page.chapters.push({ key: 'chapter-3', title: '第三节 视频', current: false, locked: false, kind: 'video', index: 2 });
+  await f.runtime.handle({ action: 'scan' }); await f.runtime.handle({ action: 'start' });
+  f.page.media.ended = true; f.page.media.currentTime = 20;
+  await f.runtime.event({ event: 'ended', runToken: f.runToken() }, f.sender);
+  f.page.chapters.forEach(chapter => { chapter.current = chapter.key === 'chapter-2'; });
+  f.page.media = { count: 0, signature: '', ready: false };
+  await f.runtime.navigate(7); assert.equal(f.runtime.state.phase, 'navigating');
+  f.page.document = { available: true, id: 'article-2', signature: 'article-2|text', atBottom: false, progress: 0 };
+  await f.runtime.navigate(7); assert.equal(f.runtime.state.phase, 'readingDocument');
+  const token = f.runToken();
+  f.page.document.atBottom = true;
+  await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender);
+  assert.equal(f.runtime.state.phase, 'navigating'); assert.equal(f.runtime.state.readDocuments, 1); assert.equal(f.runtime.state.watched, 1);
+  assert.equal(await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender), false);
+  f.page.chapters.forEach(chapter => { chapter.current = chapter.key === 'chapter-3'; });
+  f.page.document = null; f.page.media = { count: 1, signature: 'video-3|new', ready: true, ended: false };
+  await f.runtime.navigate(7); assert.equal(f.runtime.state.phase, 'playing');
+  assert.equal(f.calls.filter(call => call.action === 'selectChapter').length, 2);
+  await f.runtime.handle({ action: 'stop' });
+});
+
+test('a document destination never reuses the previous article just because the current directory item changed', async () => {
+  const f = fixture({ snapshot: { media: { count: 0, signature: '', ready: false }, document: { available: true, id: 'article', signature: 'article|first', atBottom: true, progress: 1 } } });
+  await f.runtime.handle({ action: 'scan' }); await f.runtime.handle({ action: 'start' });
+  await f.runtime.event({ event: 'documentEnd', runToken: f.runToken() }, f.sender);
+  f.page.chapters.forEach(chapter => { chapter.current = chapter.key === 'chapter-2'; });
+  await f.runtime.navigate(7); assert.equal(f.runtime.state.phase, 'navigating');
+  f.page.document.signature = 'article|new-text'; f.page.document.atBottom = false;
+  await f.runtime.navigate(7); assert.equal(f.runtime.state.phase, 'readingDocument');
+  await f.runtime.handle({ action: 'stop' });
+});
+
+test('document completion is blocked by quizzes, platform gates or locked next chapters, and stop releases its observer', async (t) => {
+  for (const mode of ['quiz', 'gate', 'locked', 'stop']) await t.test(mode, async () => {
+    const f = fixture({ snapshot: { media: { count: 0, signature: '', ready: false }, document: { available: true, id: 'article', signature: 'article|text', atBottom: false, progress: 0 } } });
+    await f.runtime.handle({ action: 'scan' }); await f.runtime.handle({ action: 'start' });
+    const token = f.runToken(); f.page.document.atBottom = true;
+    if (mode === 'quiz') { f.page.questions = [{ key: 'q1', title: '随堂练习' }]; await f.runtime.event({ event: 'quiz', runToken: token }, f.sender); }
+    if (mode === 'gate') { f.page.gate = '需要验证码'; await f.runtime.event({ event: 'blocked', runToken: token }, f.sender); }
+    if (mode === 'locked') { f.page.chapters[1].locked = true; await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender); }
+    if (mode === 'stop') { await f.runtime.handle({ action: 'stop' }); assert.equal(await f.runtime.event({ event: 'documentEnd', runToken: token }, f.sender), false); }
+    assert.equal(f.runtime.state.running, false); assert.equal(f.calls.some(call => call.action === 'selectChapter'), false);
+    assert.ok(f.calls.some(call => call.action === 'stop')); assert.deepEqual(f.solves, []);
+  });
+});
+
+
+test('document navigation notices preserve a running article only while its binding and gate remain valid', async (t) => {
+  for (const mode of ['same-document', 'reloaded-document', 'gate']) await t.test(mode, async () => {
+    const f = fixture({ snapshot: { media: { count: 0, signature: '', ready: false }, document: { available: true, id: 'article', signature: 'article|text', atBottom: false, progress: 0 } } });
+    await f.runtime.handle({ action: 'scan' }); await f.runtime.handle({ action: 'start' });
+    if (mode === 'reloaded-document') {
+      const executeScript = f.chromeApi.scripting.executeScript;
+      f.chromeApi.scripting.executeScript = async details => (await executeScript(details)).map(entry => ({ ...entry, documentId: 'document-2' }));
+    }
+    if (mode === 'gate') f.page.gate = '需要验证码';
+    await f.runtime.navigate(7);
+    assert.equal(f.runtime.state.phase, mode === 'same-document' ? 'readingDocument' : mode === 'gate' ? 'blocked' : 'paused');
+    assert.equal(f.runtime.state.running, mode === 'same-document');
+    assert.equal(f.calls.some(call => call.action === 'selectChapter'), false);
+    await f.runtime.handle({ action: 'stop' });
+  });
 });

@@ -53,5 +53,5 @@ export function validateCourseSettings(input = COURSE_SETTINGS) {
   return settings;
 }
 export function courseSession() {
-  return { phase: 'idle', running: false, operation: '', tabId: null, platformId: '', snapshot: null, watched: 0, error: '', message: '打开已登录的课程页面，识别后开始学习。', log: [], settings: { ...COURSE_SETTINGS } };
+  return { phase: 'idle', running: false, operation: '', tabId: null, platformId: '', snapshot: null, watched: 0, readDocuments: 0, error: '', message: '打开已登录的课程页面，识别后开始学习。', log: [], settings: { ...COURSE_SETTINGS } };
 }

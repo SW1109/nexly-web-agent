@@ -132,7 +132,7 @@ test('installPageControls renders task feedback and keeps recovery controls avai
 
   const res = installPageControls({ phase: 'idle', busy: false });
   assert.equal(res.ok, true);
-  assert.equal(globalThis.__nexlyPageControls.revision, 7);
+  assert.equal(globalThis.__nexlyPageControls.revision, 8);
 
   const titleNode = created.find((n) => n.tagName === 'STRONG');
   assert.equal(titleNode?.textContent, 'QuizMate');
