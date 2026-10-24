@@ -1,4 +1,4 @@
-export const OPACITY = Object.freeze({ min: 40, max: 100, defaultValue: 90 });
+export const OPACITY = Object.freeze({ min: 0, max: 100, defaultValue: 90 });
 export const DEFAULT_APPEARANCE = Object.freeze({ opacity: OPACITY.defaultValue });
 export const DEFAULT_POSITION = Object.freeze({ x: 1, y: 1 });
 

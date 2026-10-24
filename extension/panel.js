@@ -133,12 +133,15 @@ function render(state) {
   $('read').setAttribute('aria-busy', String(Boolean(reading)));
   document.querySelector('.question-section').setAttribute('aria-busy', String(Boolean(reading)));
   const draftOnly = state.question?.assignment?.draftOnly === true;
-  $('auto').textContent = draftOnly ? '生成作业参考草稿' : '开始答题 →';
+  $('auto').disabled ||= state.question?.assignment?.promptReady === false;
+  $('solve').disabled ||= state.question?.assignment?.promptReady === false;
+  $('auto').textContent = draftOnly ? state.editor?.assignmentWritable ? '生成并录入文章' : '生成作业参考草稿' : '开始答题 →';
   $('solve').textContent = draftOnly ? '仅预览草稿' : '仅预览答案';
   $('practice-hint').textContent = draftOnly ? state.question.assignment.guidance : '置信度达到 80% 后自动填写，最终提交由你操作。';
   $('answer-title').textContent = draftOnly ? '作业参考草稿' : '答案预览';
-  $('fill').hidden = draftOnly;
-  $('fill').disabled ||= draftOnly;
+  $('fill').textContent = draftOnly ? '录入文章' : '填入此答案';
+  $('fill').hidden = draftOnly && !state.editor?.assignmentWritable;
+  $('fill').disabled ||= draftOnly && !state.editor?.assignmentWritable;
   $('empty').hidden = Boolean(state.question);
   $('question').hidden = !state.question;
   if (state.question) {
@@ -168,7 +171,7 @@ function render(state) {
     $('confidence').textContent = `${Math.round(answer.confidence * 100)}% 置信度`;
     $('answer-body').textContent = answer.code || answer.choiceIds.map((id) => { const option = state.question.options.find((item) => item.id === id); return `${option?.label || id} · ${option?.text || ''}`; }).join('\n') || answer.fills.map((item) => `${state.question.fields.find((field) => field.id === item.fieldId)?.label || item.fieldId}：${item.value}`).join('\n');
     $('explanation').textContent = answer.explanation;
-    $('fill-status').textContent = draftOnly ? `参考草稿约 ${draftCharacters} 字符（不含空白）。${draftLengthWarning}请核对字数、事实与论述后按平台规则人工录入；未填写、保存或提交。` : state.phase === 'filled' ? '已填写并回读核对，尚未提交。'
+    $('fill-status').textContent = draftOnly ? `参考草稿约 ${draftCharacters} 字符（不含空白）。${draftLengthWarning}${state.phase === 'filled' ? '文章已录入并回读核对，请人工保存草稿并最终提交。' : state.error ? `录入未完成：${state.error}` : state.phase === 'applying' ? '正在录入并核对文章…' : state.editor?.assignmentWritable ? '请核对字数、事实与论述后点击“录入文章”；未填写、保存或提交。' : '请核对字数、事实与论述后按平台规则人工录入；未填写、保存或提交。'}` : state.phase === 'filled' ? '已填写并回读核对，尚未提交。'
       : state.phase === 'awaitingManual' ? '已填写，等待你手动提交代码并切换下一题；切题后继续求解。'
       : state.paused ? (state.pauseReason === 'inactive' ? '等待回到原练习页，返回后自动继续填写。' : '已手动暂停，点击“继续”后填写。')
       : state.error ? `未完成填写：${state.error}`

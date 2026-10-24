@@ -1,6 +1,6 @@
 {
   "name": "quiz-mate",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "description": "QuizMate 智答伴侣：Chrome / Edge AI 练习助手，支持本地 CLI 与 OpenAI 兼容 API",

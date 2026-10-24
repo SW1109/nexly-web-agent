@@ -14,6 +14,11 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
   const received = [], errors = [];
   const server = createServer(async (request, response) => {
     if (request.url === '/unrecognized-form') { response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end('<!doctype html><html><body><label>联系邮箱<input type="email"></label></body></html>'); return; }
+    if (request.url.startsWith('/mod/assign/view.php?id=124')) {
+      const instructionsOnly = request.url.includes('instructions=1');
+      response.setHeader('Content-Type', 'text/html; charset=utf-8');
+      response.end(`<!doctype html><html lang="zh-CN"><body data-submit="0"><main><h1>大作业</h1><div id="intro"><h2>大作业说明</h2><p>答题要求：共有三套题，请选择其中的一套试卷，只能选择一套。不能复制粘贴，字数不少于1000字。</p>${instructionsOnly ? '' : '<p>第一套试卷：</p><p>论述题：请结合材料分析创新机制。</p>'}</div><form onsubmit="event.preventDefault();document.body.dataset.submit++"><div id="fitem_id_onlinetext_editor" class="fitem"><textarea id="id_onlinetext_editor" name="onlinetext_editor[text]" aria-hidden="true" style="display:none"></textarea><iframe id="id_onlinetext_editor_ifr" srcdoc="<body contenteditable=true><p><br></p></body>"></iframe></div><button type="submit">保存草稿</button></form></main></body></html>`); return;
+    }
     if (request.url.startsWith('/mod/assign/view.php?')) {
       response.setHeader('Content-Type', 'text/html; charset=utf-8');
       response.end(`<!doctype html><html lang="zh-CN"><title>模拟大作业</title><body data-navigation="0" data-submit="0"><aside>PRIVATE-COURSE-NAVIGATION</aside><main id="region-main"><h1>大作业</h1><div id="intro"><h2>大作业说明</h2><p>学生答题不能复制粘贴。论述严谨，字数不少于1000字。</p><p>大作业：请结合材料说明创新机制。</p></div><section class="submissionsummarytable">没有尝试<textarea id="assignment-editor">人工原稿</textarea><button onclick="document.body.dataset.navigation++">添加作业</button><button onclick="document.body.dataset.submit++">提交作业</button><button onclick="document.body.dataset.navigation++">下一活动</button></section></main></body></html>`); return;
@@ -214,6 +219,57 @@ test('Chrome extension API UI, real Worker fetch, secret isolation, closed-panel
     const cleared = await page.evaluate(async () => (await chrome.storage.session.get('taskState')).taskState);
     assert.equal(cleared.question, null); assert.equal(cleared.answer, null); assert.equal(cleared.target, null);
     assert.equal(await page.locator('#answer-section').isVisible(), false);
+  });
+  await t.test('assignment iframe can be filled from the panel; instruction-only pages do not invoke the model', async (t) => {
+    const assignment = await context.newPage();
+    await assignment.goto(origin + '/mod/assign/view.php?id=124&action=editsubmission');
+    await assignment.waitForFunction(() => document.querySelector('iframe').contentDocument?.body?.isContentEditable);
+    const command = (action, data = {}) => page.evaluate(({ action, data }) => chrome.runtime.sendMessage({ type: 'command', action, ...data }), { action, data });
+    const finish = expected => page.evaluate(async expected => {
+      for (let i = 0; i < 400; i++) {
+        const state = (await chrome.storage.session.get('taskState')).taskState;
+        if (state && !state.busy && (!expected || state.phase === expected || state.phase === 'error')) return state;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error('Assignment did not complete');
+    }, expected);
+    t.after(async () => { await command('stop'); await assignment.close(); await exercise.bringToFront(); });
+    assert.equal((await command('read')).ok, true);
+    assert.equal((await command('start', { fill: false })).ok, true);
+    let state = await finish();
+    assert.equal(state.phase, 'ready', state.error); assert.equal(state.question.assignment.chooseOne, true);
+    await page.waitForFunction(() => document.getElementById('fill').textContent === '录入文章' && !document.getElementById('fill').disabled);
+    assert.equal(await page.locator('#fill').isVisible(), true);
+    assert.equal(await assignment.locator('#id_onlinetext_editor').inputValue(), '');
+    // Keep the practice tab active, as it is when the side panel is used in the browser.
+    await page.locator('#fill').evaluate(button => button.click());
+    state = await finish('filled');
+    assert.equal(state.phase, 'filled', state.error);
+    assert.match(await assignment.locator('#id_onlinetext_editor').inputValue(), /测试结果 42/);
+    assert.equal(await assignment.getAttribute('body', 'data-submit'), '0');
+    await page.waitForFunction(() => document.getElementById('fill-status').textContent.includes('文章已录入'));
+    await assignment.evaluate(() => {
+      document.querySelector('iframe').contentDocument.body.innerHTML = '<p><br></p>';
+      document.querySelector('#id_onlinetext_editor').value = '';
+    });
+    assert.equal((await command('read')).ok, true);
+    await page.waitForFunction(() => document.getElementById('auto').textContent === '生成并录入文章' && !document.getElementById('auto').disabled);
+    const beforeAuto = received.length;
+    await page.locator('#auto').evaluate(button => button.click());
+    state = await finish('filled');
+    assert.equal(state.phase, 'filled', state.error); assert.equal(state.completed, 1);
+    assert.equal(received.slice(beforeAuto).filter(entry => entry.path === '/v1/chat/completions').length, 1);
+    assert.match(await assignment.locator('#id_onlinetext_editor').inputValue(), /测试结果 42/);
+    assert.equal(await assignment.getAttribute('body', 'data-submit'), '0');
+    await assignment.goto(origin + '/mod/assign/view.php?id=124&instructions=1');
+    assert.equal((await command('read')).ok, true);
+    await page.waitForFunction(() => document.getElementById('auto').disabled && document.getElementById('solve').disabled);
+    assert.match(await page.locator('#practice-hint').textContent(), /尚未读到具体试题/);
+    const before = received.length;
+    await command('start'); state = await finish();
+    assert.equal(state.phase, 'error'); assert.match(state.error, /尚未读到具体试题/);
+    assert.equal(received.slice(before).filter(entry => entry.path === '/v1/chat/completions').length, 0);
+    assert.equal(await assignment.locator('#id_onlinetext_editor').inputValue(), '');
   });
   // Moodle 同页多题：真实 DOM + Worker + API，包含重复题干、标记框、隐藏题和屏幕外题。
   await t.test('all current-page questions are filled without navigation or submission', async (t) => {

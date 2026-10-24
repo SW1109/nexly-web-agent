@@ -97,3 +97,13 @@ test('assignment metadata remains preview-only through validation and permits lo
   assert.throws(() => validateQuestion({ ...raw, assignment: { ...raw.assignment, draftOnly: false } }), /契约/);
   assert.throws(() => validateQuestion({ ...single, assignment: raw.assignment }), /契约/);
 });
+
+
+test('assignment readiness and single-paper policy survive validation without trusting extra metadata', () => {
+  const raw = { ...single, type: 'text', options: [], fields: [{ id: 'assignment-draft', label: '参考草稿' }], assignment: { draftOnly: true, minimumCharacters: 1000, guidance: '请选择一套', promptReady: false, chooseOne: true, cookie: 'private' } };
+  const question = validateQuestion(raw);
+  assert.equal(question.assignment.promptReady, false); assert.equal(question.assignment.chooseOne, true);
+  assert.equal(question.assignment.cookie, undefined);
+  assert.match(buildPrompt(question), /只解答第一套完整试题/);
+  assert.throws(() => validateQuestion({ ...raw, assignment: { ...raw.assignment, promptReady: 'false' } }), /布尔值/);
+});

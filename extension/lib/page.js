@@ -174,7 +174,7 @@ export async function pageAction(action, payload = {}) {
     else if (optionMarks >= 2) type = 'single';
     else if (editorRoots.length) type = 'code';
     else type = 'text';
-    const fields = assignmentPage ? [{ id: 'assignment-draft', label: '作业参考草稿（人工录入及提交）' }] : type === 'blank' || type === 'text' ? inputNodes.map((el, i) => ({ id: `field-${i}`, label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || `第 ${i + 1} 空` })) : [];
+    const fields = assignmentPage ? [{ id: 'assignment-draft', label: '作业参考草稿（复核后录入，人工提交）' }] : type === 'blank' || type === 'text' ? inputNodes.map((el, i) => ({ id: `field-${i}`, label: el.getAttribute('aria-label') || el.getAttribute('placeholder') || `第 ${i + 1} 空` })) : [];
     if (['single', 'multiple', 'judge'].includes(type) && (options.length < 2 || options.some((o) => !o.text))) return readResult({ ok: false, error: '选择题选项不完整，已停止识别' });
     if (['blank', 'text'].includes(type) && !fields.length) return readResult({ ok: false, error: '没有识别到可编辑答案区域' });
     // 只有编程题才查找执行入口；选择题、填空题等的页面上出现的“验证/执行”按钮一律不属于本流程。
@@ -280,20 +280,95 @@ export async function pageAction(action, payload = {}) {
         if (all('[aria-busy="true"],.ant-spin-spinning,.el-loading-mask', root).length) editorInfo = { ...editorInfo, supported: false, retryable: true, error: '正在等待当前题目加载完成' }; }
       catch (error) { editorInfo = { kind: editorRoots[0]?.className || 'unknown', supported: false, retryable: true, code: '', error: error.message, errorCode: error.code }; }
     }
+    // 只绑定 Moodle 在线文本字段，避免把导航、评论框或其他 iframe 当作文章编辑器。
+    const richText = (value) => String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').split('\n').map((line) => line.trim()).filter(Boolean).join('\n');
+    function assignmentEditor() {
+      const assignmentField = document.getElementById('fitem_id_onlinetext_editor');
+      const fieldSources = assignmentField ? [...assignmentField.querySelectorAll('textarea')].filter((el) => !el.closest('[role="dialog"],.tox-dialog,.mce-window')) : [];
+      const sources = [...new Set([...fieldSources, ...document.querySelectorAll('textarea')].filter((el) =>
+        fieldSources.includes(el) || /^(?:id_)?onlinetext(?:_editor)?$/.test(el.id) || /^onlinetext(?:_editor)?(?:\[text\])?$/.test(el.name || '')))];
+      const matches = [];
+      for (const source of sources) {
+        // 富文本编辑器会隐藏原始 textarea（包括 aria-hidden）；应检查可见编辑器，而不是把隐藏的表单字段当作禁用。
+        if (source.disabled || source.readOnly || source.getAttribute('aria-disabled') === 'true' || source.closest('fieldset[disabled]') || source.parentElement?.closest('[hidden],[inert],[aria-hidden="true"],[aria-disabled="true"]')) continue;
+        const tiny = (globalThis.tinymce || globalThis.tinyMCE)?.get?.(source.id);
+        const container = assignmentField?.contains(source) ? assignmentField : source.closest('.feditor,.fitem,.form-group');
+        const frames = container ? all('iframe', container) : [];
+        const frame = document.getElementById(`${source.id}_ifr`) || (frames.length === 1 ? frames[0] : null);
+        const inline = container ? all('[contenteditable="true"]', container).filter((node) => !node.closest('.tox-toolbar,.mce-toolbar')) : [];
+        let body;
+        try { body = tiny?.getBody?.() || frame?.contentDocument?.body; } catch { continue; }
+        if (tiny) {
+          if (!body?.isContentEditable || tiny.mode?.isReadOnly?.() || tiny.settings?.readonly || tiny.isHidden?.() || !visible(tiny.getContainer?.() || frame || body)) continue;
+          matches.push({ kind: 'tinymce', source, body, get: () => tiny.getContent({ format: 'text' }), html: () => tiny.getContent(), set(html) {
+            const write = () => tiny.setContent(html);
+            if (tiny.undoManager?.transact) tiny.undoManager.transact(write); else write();
+            tiny.save(); // 同步隐藏表单字段；不会调用网站的保存/提交按钮。
+            tiny.setDirty?.(true);
+            if (tiny.dispatch) tiny.dispatch('change'); else tiny.fire?.('change');
+          } });
+        } else if (frame) {
+          if (!visible(frame) || !body?.isContentEditable) continue;
+          matches.push({ kind: 'iframe', source, body, get: () => body.innerText, html: () => body.innerHTML, set(html) { body.innerHTML = html; source.value = body.innerHTML; } });
+        } else if (inline.length === 1) {
+          body = inline[0];
+          if (body.getAttribute('aria-readonly') === 'true' || body.getAttribute('aria-disabled') === 'true') continue;
+          matches.push({ kind: 'contenteditable', source, body, get: () => body.innerText, html: () => body.innerHTML, set(html) { body.innerHTML = html; source.value = body.innerHTML; } });
+        } else if (!inline.length && visible(source)) {
+          matches.push({ kind: 'textarea', source, body: source, get: () => source.value, html: () => source.value, set(html, value) { source.value = value; } });
+        }
+      }
+      if (matches.length !== 1) throw new Error(matches.length ? '发现多个在线文本编辑器，请只保留当前作业的编辑入口' : sources.length || assignmentField ? '已找到在线文本字段，但编辑器尚未就绪、隐藏或只读；请展开编辑区域并等待加载后重新读取' : '尚未找到在线文本编辑器；请打开“添加作业”或“编辑提交”，等待编辑器加载后重新读取');
+      return matches[0];
+    }
+    let articleEditor = null;
     const question = { questionId, title, type, stem, options: type === 'code' ? [] : options, fields, language: normalize(language).slice(0, 100), starterCode: editorInfo.code, pageUrl };
     if (assignmentPage) {
       const minimum = stem.match(/(?:不少于|不低于|至少)\s*([0-9][0-9,，]*)\s*字/);
       const count = minimum ? Number(minimum[1].replace(/[,，]/g, '')) : null;
-      // 未见实际编辑入口前只生成草稿；尤其不能用脚本赋值绕过页面明确的禁粘贴规则。
-      question.assignment = { draftOnly: true, minimumCharacters: Number.isInteger(count) && count > 0 && count <= 48000 ? count : null,
-        guidance: /(?:不能|不可|不允许|禁止|不得)\s*(?:复制\s*粘贴|粘贴)/.test(stem)
-          ? '页面明确禁止复制粘贴；仅生成可复核的参考草稿，请按平台规则人工录入和提交。'
-          : '大作业仅生成参考草稿；请人工打开“添加作业”，复核、录入并最终提交。' };
+      const pasteRestricted = /(?:不能|不可|不允许|禁止|不得)\s*(?:复制\s*粘贴|粘贴)/.test(stem);
+      // 说明文字属于题面数据。只有实际可用的在线文本字段才提供录入入口。
+      const chooseOne = /(?:选择|选取|选做|任选)[^。\n]{0,40}(?:一套|1套)|(?:三|3)套(?:题|试卷)/.test(stem);
+      const hasPrompt = /(?:大作业|题目|问题|材料|论述题|简答题|试题)\s*[：:]\s*\S|[？?]|请(?:结合|论述|分析|谈谈|说明|比较|阐述)|观看|观后感|如何|为什么|(?:第[一二三123]套(?:试卷|试题)|试卷[一二三123])\s*[：:\n]/.test(stem);
+      const promptReady = !/(?:答题要求|大作业说明)/.test(stem) || hasPrompt;
+      let guidance;
+      try { articleEditor = assignmentEditor(); guidance = '点击“生成并录入文章”后，置信度达到 80% 会自动填写在线文本；“仅预览草稿”不填写。请复核后人工保存草稿并最终提交。'; }
+      catch (error) { guidance = error.message; }
+      if (pasteRestricted) guidance = `页面注明禁止复制粘贴，请按平台规则人工录入和提交。${guidance}`;
+      if (chooseOne) guidance = `本作业只能选一套试卷作答；生成草稿时默认选择页面中的第一套完整试题，并注明所选套题。${guidance}`;
+      if (!promptReady) {
+        articleEditor = null;
+        guidance = '当前仅识别到答题要求，尚未读到具体试题。请在试卷开放后打开所选套题的正文，再重新读取；附件中的试题需要先打开正文页面。';
+      }
+      editorInfo = { kind: articleEditor?.kind || '', supported: Boolean(articleEditor), error: articleEditor ? '' : guidance };
+      question.assignment = { draftOnly: true, minimumCharacters: Number.isInteger(count) && count > 0 && count <= 48000 ? count : null, guidance, promptReady, chooseOne };
     }
-    if (action === 'read') return readResult({ ok: true, question, pageQuestions, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null }, run: runInfo(), visible: document.visibilityState === 'visible' });
-    if (assignmentPage && ['fill', 'fillStep', 'run', 'next'].includes(action)) return { ok: false, error: question.assignment.guidance };
+    if (action === 'read') return readResult({ ok: true, question, pageQuestions, editor: { kind: editorInfo.kind, supported: editorInfo.supported, error: editorInfo.error, retryable: editorInfo.retryable === true, binding: editorInfo.binding || null, ...(assignmentPage ? { assignmentWritable: Boolean(articleEditor) } : {}) }, run: runInfo(), visible: document.visibilityState === 'visible' });
+    if (assignmentPage && (['run', 'next'].includes(action) || ['fill', 'fillStep'].includes(action) && !articleEditor)) return { ok: false, error: question.assignment.guidance };
     if (!payload.allowBackground && document.visibilityState !== 'visible') return action === 'fillStep' ? { ok: true, waitingForFocus: true } : { ok: false, error: '练习页已隐藏，已停止页面操作；请回到原标签后继续' };
     if (payload.questionId !== questionId) return { ok: false, error: '页面题目已变化，拒绝把旧答案写入新题' };
+
+    if (assignmentPage && ['fill', 'fillStep'].includes(action)) {
+      const answer = payload.answer;
+      if (!answer || answer.questionId !== questionId || answer.type !== 'text' || answer.fills?.length !== 1 || answer.fills[0].fieldId !== 'assignment-draft' || typeof answer.fills[0].value !== 'string') throw new Error('答案与当前作业不匹配');
+      const value = answer.fills[0].value.replace(/\r\n?/g, '\n');
+      if (!value.trim() || value.length > 48000) throw new Error('文章内容为空或超出支持长度');
+      const current = richText(articleEditor.get());
+      if (current && current !== richText(value) || articleEditor.body.querySelector('img,video,audio,table,hr,iframe,object,embed')) throw new Error('编辑器已有内容，请先自行整理或清空后再录入，避免覆盖你的修改');
+      if (!root.isConnected || questionText() !== stem) throw new Error('作业题面已变化，请重新读取');
+      if (current !== richText(value)) {
+        const escape = (line) => line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const html = value.split('\n').map((line) => `<p>${line ? escape(line) : '<br>'}</p>`).join('');
+        articleEditor.set(html, value);
+      }
+      for (const node of new Set([articleEditor.body, articleEditor.source])) {
+        const EventClass = node.ownerDocument.defaultView.Event;
+        node.dispatchEvent(new EventClass('input', { bubbles: true }));
+        node.dispatchEvent(new EventClass('change', { bubbles: true }));
+      }
+      if (richText(articleEditor.get()) !== richText(value) || articleEditor.kind !== 'textarea' && articleEditor.source.value !== articleEditor.html()) throw new Error('文章录入后的编辑器或表单回读不一致，请检查页面内容');
+      return { ok: true, done: true, verified: true, detail: '文章已录入并回读核对，请人工保存草稿并最终提交。' };
+    }
 
     if (type === 'code' && ['fillStep', 'fill', 'run'].includes(action)) {
       if (!editorInfo.supported) return { ok: true, waiting: true, detail: editorInfo.error };

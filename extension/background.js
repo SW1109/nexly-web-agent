@@ -565,13 +565,27 @@ async function solveSequence(task, options) {
         }
         task.target = snapshot.target; task.currentQuestionId = snapshot.question.questionId;
         await publish(snapshot, `已识别：${snapshot.question.title || snapshot.question.type}`);
+        if (snapshot.question.assignment?.promptReady === false) throw new Error(snapshot.question.assignment.guidance);
         if (visited.has(snapshot.question.questionId)) throw new Error('已处理过当前题目，停止重复求解');
         await attachControls(snapshot.target); assertCurrent(task);
         if (snapshot.question.type === 'code' && !snapshot.editor.supported && options.fill) throw new Error(snapshot.editor.error);
         await gate(task);
         await publish({ phase: 'solving', cliStage: '' }, task.connectionMode === 'api' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
         const answer = await requestAnswer(task, snapshot.question, snapshot.target);
-        if (snapshot.question.assignment?.draftOnly) { await publish({ phase: 'ready', paused: false, pauseReason: null, autoFill: false }, snapshot.question.assignment.guidance); break; }
+        if (snapshot.question.assignment?.draftOnly) {
+          // 大作业只处理当前一份。生成期间编辑器可能刚加载完成，写入前重新核对题目和编辑入口。
+          const current = await ensureSame(snapshot.target, snapshot.question.questionId); assertCurrent(task);
+          await publish({ question: validateQuestion(current.question), editor: current.editor });
+          if (!options.fill || !current.editor?.assignmentWritable || answer.confidence < 0.8) {
+            const detail = !options.fill ? '仅预览草稿：已生成参考内容，未填写网页。'
+              : !current.editor?.assignmentWritable ? current.question.assignment.guidance : '置信度不足 80%，未自动录入文章，请先复核草稿。';
+            await publish({ phase: 'ready', paused: false, pauseReason: null, autoFill: false }, detail);
+          } else {
+            await fillWithDelay(task);
+            await publish({ completed: completed + 1 });
+          }
+          break;
+        }
         if (!options.fill) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '仅预览模式：答案已返回，未填写网页。'); break; }
         if (answer.confidence < 0.8) { await publish({ phase: 'ready', paused: false, pauseReason: null }, '置信度不足 80%，停止自动填写，请人工复核。'); break; }
         try { await fillWithDelay(task); }
@@ -758,7 +772,7 @@ async function handle(message, pageTarget = null, courseTabId = null) {
   }
   if (message.action === 'fill' || message.action === 'run') {
     if (!state.target) throw new Error('请先读取题目');
-    if (state.question?.assignment?.draftOnly) throw new Error(state.question.assignment.guidance);
+    if (state.question?.assignment?.draftOnly && (message.action !== 'fill' || !state.editor?.assignmentWritable)) throw new Error(state.question.assignment.guidance);
     const task = { id: crypto.randomUUID(), tabId: state.target.tabId, target: state.target, currentQuestionId: state.question?.questionId, paused: false, stopped: false, request: null };
     controller = task;
     operationEpoch++;

@@ -7,7 +7,7 @@ const until = async (predicate) => { for (let i = 0; i < 1000; i++) { if (predic
 
 test('background workflow uses JSON-safe Gemini injections and verifies freshness, pause, cancel and confidence gates', async (t) => {
   let saved = null, question = structuredClone(single), active = true, focused = true, frameFocused = true, writes = 0, fillResponder = null;
-  let tabUrlVisible = true, pageReadable = true, pageSheet = null, navigationSearches = 0;
+  let assignmentWritable = false, tabUrlVisible = true, pageReadable = true, pageSheet = null, navigationSearches = 0;
   const shortcut = event(), navigated = event(), storageChanged = event();
   const localSettings = {}, appearanceMessages = [];
   let navigationQuestion = null, navigationQueue = [], navigationClicks = 0, editorReadyAt = 0, navigationEditorDelay = 0, hiddenFrame = false, runClicks = 0, runAvailable = true, runFailure = null, emptyInjection = false;
@@ -39,7 +39,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
           if (!selected) return [{ frameId: 4, result: { ok: false, error: '当前页题块已变化或消失' } }];
           question = structuredClone(selected);
         }
-        const result = { frameId: 4, result: { ok: true, question: structuredClone(question), editor: { supported: Date.now() >= editorReadyAt, error: Date.now() < editorReadyAt ? '编辑器正在初始化' : '' }, run: question.type === 'code' ? { available: runAvailable, reason: runAvailable ? '' : 'missing', label: runAvailable ? '执行验证' : '', count: runAvailable ? 1 : 0, disabled: false } : { available: false, reason: 'not-code', label: '', count: 0, disabled: false }, visible: true } };
+        const result = { frameId: 4, result: { ok: true, question: structuredClone(question), editor: { assignmentWritable, supported: Date.now() >= editorReadyAt, error: Date.now() < editorReadyAt ? '编辑器正在初始化' : '' }, run: question.type === 'code' ? { available: runAvailable, reason: runAvailable ? '' : 'missing', label: runAvailable ? '执行验证' : '', count: runAvailable ? 1 : 0, disabled: false } : { available: false, reason: 'not-code', label: '', count: 0, disabled: false }, visible: true } };
         if (pageSheet) result.result.pageQuestions = { keys: pageSheet.map(item => item.questionId), currentKey: question.questionId, signature: pageSheet.map(item => item.questionId).join('|') };
         if (hiddenFrame && target.allFrames) return [result,
           { frameId: 0, result: { ok: false, frame: { shown: true, children: [{ url: single.pageUrl, shown: true }, { url: single.pageUrl + '?cached', shown: false }] } } },
@@ -458,6 +458,45 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
     assert.equal((await command('read')).ok, false);
     assert.equal(saved.question, null); assert.equal(saved.answer, null); assert.equal(saved.target, null);
     pageReadable = true; question = single;
+  });
+
+  await t.test('assignment explicit fill writes once while preview mode stays preview-only', async () => {
+    assignmentWritable = true; writes = 0;
+    question = { ...single, questionId: 'assignment-edit', type: 'text', options: [], fields: [{ id: 'assignment-draft', label: '参考草稿' }], assignment: { draftOnly: true, minimumCharacters: null, guidance: '复核后录入文章' } };
+    const after = outbound.length, clicks = navigationClicks;
+    await command('start', { provider: 'gemini', count: 20, fill: false });
+    const request = await nextSolve(after);
+    answer(request, { type: 'text', choiceIds: [], fills: [{ fieldId: 'assignment-draft', value: '文章内容' }] });
+    await until(() => !saved.busy);
+    assert.equal(saved.phase, 'ready'); assert.equal(writes, 0);
+    assert.equal((await command('fill')).ok, true);
+    assert.equal(saved.phase, 'filled'); assert.equal(writes, 1);
+    assert.equal((await command('run')).ok, false);
+    assert.equal(navigationClicks, clicks);
+    assignmentWritable = false; question = single;
+  });
+
+  await t.test('assignment auto fill stops after one article, rechecks readiness and keeps confidence/error gates', async () => {
+    const clicks = navigationClicks, searches = navigationSearches;
+    question = { ...single, questionId: 'assignment-auto', type: 'text', options: [], fields: [{ id: 'assignment-draft', label: '参考草稿' }], assignment: { draftOnly: true, minimumCharacters: null, guidance: '自动录入当前文章' } };
+    for (const scenario of ['ready', 'low-confidence', 'editor-loaded', 'editor-hidden', 'existing-content']) {
+      assignmentWritable = scenario !== 'editor-loaded'; writes = 0;
+      const after = outbound.length;
+      await command('start', { provider: 'gemini', count: 20 });
+      const request = await nextSolve(after);
+      if (scenario === 'editor-loaded') assignmentWritable = true;
+      if (scenario === 'editor-hidden') assignmentWritable = false;
+      if (scenario === 'existing-content') fillResponder = () => [{ result: { ok: false, error: '编辑器已有内容，停止录入' } }];
+      answer(request, { type: 'text', choiceIds: [], fills: [{ fieldId: 'assignment-draft', value: '文章内容' }], confidence: scenario === 'low-confidence' ? 0.4 : 1 });
+      await until(() => !saved.busy);
+      const written = ['ready', 'editor-loaded'].includes(scenario);
+      assert.equal(saved.phase, written ? 'filled' : scenario === 'existing-content' ? 'error' : 'ready', `${scenario}: ${saved.error}`);
+      assert.equal(writes, written ? 1 : 0); assert.equal(saved.completed, written ? 1 : 0);
+      assert.equal(outbound.slice(after).filter(item => item.action === 'solve').length, 1);
+      assert.equal(navigationClicks, clicks); assert.equal(navigationSearches, searches);
+      fillResponder = null;
+    }
+    assignmentWritable = false; question = single;
   });
 
   // 新上限必须在后台也接受，不能只放宽面板输入框。
