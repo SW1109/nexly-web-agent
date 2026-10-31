@@ -77,6 +77,10 @@ Best for users who already have configured CLI tools such as Codex, Claude Code,
 
 ---
 
+## Optional Official Service (0.7.0)
+
+Local CLI and self-configured API modes remain available without a license. To use optional managed inference, redeem a license in Settings against a trusted backend (default: `https://xianyu.guangnian.xin`), then select Official Service. Call limits, dollar budgets and validity come from the server; 70 calls is only a default. Administrators can edit unused, never-activated licenses. Provider API keys are never included in the extension.
+
 ## Usage Guide
 
 1. **Reading Questions**:
@@ -86,7 +90,7 @@ Best for users who already have configured CLI tools such as Codex, Claude Code,
    - **Preview Only**: Queries the model to display explanations and recommended answers without modifying web page content.
    - **Start Answering**: When confidence exceeds threshold, the extension automatically fills options/inputs and verifies the written result.
 3. **Continuous Practice**:
-   - Batch practice defaults to 20 questions and can be set from 1 to 100 questions. Choice and fill-in-the-blank questions automatically advance to the next problem upon verification; programming questions always pause and wait for manual user review and submission.
+   - Batch practice defaults to 100 questions and can be set from 1 to 200 questions. Choice and fill-in-the-blank questions automatically advance to the next problem upon verification; programming questions always pause and wait for manual user review and submission.
 4. **Shortcuts & Floating Controls**:
    - Default hotkey: `Alt + Shift + N` (Start / Pause / Resume).
    - Floating Widget: Expands on hover and collapses on leave. Drag to relocate, or use `Alt + Arrow keys` to nudge position.
@@ -136,7 +140,7 @@ npm run doctor
 1. **Manual Submission Policy**: This tool is an educational and practice assistant. It **never clicks "Submit", "Turn In", or "Finish Exam"**. All final submissions must be inspected and performed by the user.
 2. **Compliance**: Use only in educational, practice, and self-assessment environments where AI assistance is explicitly authorized. Do not use for accredited exams or in violation of academic integrity policies.
 3. **Model Accuracy**: Large language models may produce hallucinations or inaccuracies. Confidence ratings reflect internal model heuristics and do not guarantee correctness.
-4. **Privacy**: All settings and keys are stored locally. Direct API requests go exclusively to your configured service endpoint without passing through any intermediate proxy servers.
+4. **Privacy**: Local CLI and self-configured API modes send questions to your chosen provider. Optional official service forwards questions through your configured authorization backend and records usage metadata, including IP, tokens, cost and status. Provider API keys stay encrypted on the server; the extension stores only a revocable authorization session. See the privacy policy for retention and controls.
 
 ---
 
