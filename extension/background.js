@@ -1,5 +1,6 @@
+import { getLicenseClient } from './lib/license-client.js';
 import { DATA_CONSENT_VERSION } from './lib/project-info.js';
-import { PROVIDERS, LIMITS, CLI_PROGRESS_LABELS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
+import { PROVIDERS, LIMITS, PRACTICE_BATCH, CLI_PROGRESS_LABELS, validateQuestion, validateAnswer, shouldRunSamples } from './lib/contracts.js';
 import { pageAction } from './lib/page.js';
 import { prepareSolver, solverHealth, apiProbe } from './lib/solver.js';
 import { connectionMode } from './lib/api-config.js';
@@ -23,6 +24,8 @@ const courses = createCourseRuntime({
   solveQuiz: ({ tabId, fill }) => handle({ action: 'start', fill, count: 1 }, null, tabId),
   onChange: () => publishCourseControls()
 });
+// 授权会话仅由后台服务持有，不进入题目状态与页内消息。
+const licenseClient = getLicenseClient();
 void protectApiStorage().then(() => apiSettings()).catch(() => {});
 const hydrated = chrome.storage.session.get('taskState').then(({ taskState }) => {
   if (taskState) state = { ...emptyState(), ...taskState, busy: false, operation: null, paused: false, pauseReason: null, phase: taskState.busy ? 'interrupted' : taskState.phase, error: taskState.busy ? '浏览器后台曾重启，任务已停止。请重新读取或求解。' : taskState.error };
@@ -57,9 +60,9 @@ async function preferences(overrides = {}) {
   const saved = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'connectionMode']);
   const mode = connectionMode(overrides.connectionMode ?? saved.connectionMode ?? 'local');
   const provider = overrides.provider ?? saved.provider ?? 'codex';
-  const count = Number(overrides.count ?? saved.count ?? 20), run = overrides.run ?? saved.runAfterFill ?? false;
+  const count = Number(overrides.count ?? saved.count ?? PRACTICE_BATCH.defaultCount), run = overrides.run ?? saved.runAfterFill ?? false;
   if (mode === 'local' && !PROVIDERS.includes(provider)) throw new Error('请选择受支持的本地 CLI');
-  if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('每批题数应为 1～100');
+  if (!Number.isInteger(count) || count < PRACTICE_BATCH.minimum || count > PRACTICE_BATCH.maximum) throw new Error(`每批题数应为 ${PRACTICE_BATCH.minimum}～${PRACTICE_BATCH.maximum}`);
   if (typeof run !== 'boolean') throw new Error('执行样例选项必须为 true 或 false');
   const runInBackground = overrides.runInBackground ?? saved.runInBackground ?? true;
   if (typeof runInBackground !== 'boolean') throw new Error('后台运行选项必须为 true 或 false');
@@ -570,7 +573,7 @@ async function solveSequence(task, options) {
         await attachControls(snapshot.target); assertCurrent(task);
         if (snapshot.question.type === 'code' && !snapshot.editor.supported && options.fill) throw new Error(snapshot.editor.error);
         await gate(task);
-        await publish({ phase: 'solving', cliStage: '' }, task.connectionMode === 'api' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
+        await publish({ phase: 'solving', cliStage: '' }, task.connectionMode !== 'local' ? `通过 API 模型 ${task.solver.model} 求解；仅向已配置的中转站发送本题。` : `通过本地 ${task.provider} CLI 求解，使用该 CLI 当前配置。`);
         const answer = await requestAnswer(task, snapshot.question, snapshot.target);
         if (snapshot.question.assignment?.draftOnly) {
           // 大作业只处理当前一份。生成期间编辑器可能刚加载完成，写入前重新核对题目和编辑入口。
@@ -702,6 +705,11 @@ async function handle(message, pageTarget = null, courseTabId = null) {
     const saved = await chrome.storage.local.get('connectionMode');
     return solverHealth(message.connectionMode ?? saved.connectionMode ?? 'local');
   }
+  if (message.action === 'licenseService') return licenseClient.service();
+  if (message.action === 'licenseSettings') return licenseClient.settings();
+  if (message.action === 'licenseRedeem') return licenseClient.redeem(message.server, message.code);
+  if (message.action === 'licenseRefresh') return licenseClient.refresh();
+  if (message.action === 'licenseLogout') return licenseClient.logout();
   if (message.action === 'apiSettings') return apiSettings();
   if (message.action === 'apiCancel') { probes.get(message.probeId)?.cancel(); return { canceled: true }; }
   if (['saveApiSettings', 'clearApiKey', 'unlockApiKey', 'lockApiKey', 'apiModels', 'apiTest'].includes(message.action)) {

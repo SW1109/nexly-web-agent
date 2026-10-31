@@ -1,4 +1,6 @@
 export const VERSION = 1;
+// 连续换题练习的默认值与边界统一维护；同页多题仍处理完整题目队列。
+export const PRACTICE_BATCH = Object.freeze({ minimum: 1, maximum: 200, defaultCount: 100 });
 export const HOST_NAME = 'com.nexly.web_agent';
 export const CLI_TIMEOUT_MS = 180000;
 export const CLI_BRIDGE_TIMEOUT_MS = CLI_TIMEOUT_MS + 20000;

@@ -5,11 +5,13 @@ import { activePracticeTab } from './tab-access.js';
 export function createPanelLayout({ onWorkspace = () => {}, onInspect = () => {}, onLeaveSettings = async () => {} } = {}) {
   const $ = (id) => document.getElementById(id);
   const workspaces = ['home', 'course', 'practice', 'records'];
-  const categories = ['connection', 'course', 'practice', 'controls', 'about'];
+  const categories = ['connection', 'course', 'practice', 'controls', 'license', 'about'];
   let workspace = 'home', settingsCategory = 'connection', taskScroll = 0, contextEpoch = 0, contextPlatform = null, contextAvailable = false, busy = false, invalidField = null;
   function selectSettings(category, focus = false) {
     if (!categories.includes(category)) return;
     settingsCategory = category; document.body.dataset.settingsCategory = category;
+    // 卡密以兑换/核对按钮即时处理，不要求再保存模型或任务设置。
+    $('settings-footer').hidden = category === 'license';
     for (const name of categories) {
       const selected = name === category, tab = $(`setting-${name}`);
       tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;

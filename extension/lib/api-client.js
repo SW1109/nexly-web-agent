@@ -1,4 +1,5 @@
 import { buildPrompt, parseAnswer, validateQuestion } from './contracts.js';
+import { licenseServer } from './license-client.js';
 import { validateApiConfig, validateApiKey } from './api-config.js';
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const apiError = (message, code = 'API_ERROR') => Object.assign(new Error(message), { code });
@@ -147,5 +148,37 @@ export async function executeApi(action, rawConfig, key, question, { signal, fet
     if (error.code?.startsWith('API_')) throw error;
     if (error instanceof TypeError) throw apiError('无法连接 API，请检查网络、域名授权、HTTPS 证书和接口地址（不允许重定向）', 'API_NETWORK');
     throw apiError('API 答案未通过格式或题目一致性校验，未填写网页');
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+}
+
+/** 官方服务只发送可撤销卡密会话，复用原答案校验，禁止直接填入任意代理返回内容。 */
+export async function executeOfficial(config, token, question, { signal, requestId = crypto.randomUUID(), fetchImpl = globalThis.fetch } = {}) {
+  const target = licenseServer(config.server);
+  if (!/^qms_[A-Za-z0-9_-]{43}$/.test(token) || typeof config.model !== 'string' || !config.model) throw apiError('官方服务授权或模型无效', 'API_OFFICIAL');
+  const input = validateQuestion(question), prompt = buildPrompt(input);
+  const controller = new AbortController(), abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  const timer = setTimeout(abort, 200000);
+  try {
+    const response = await fetchImpl(target.server + '/api/v1/plugin-license/complete', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: requestId, model: config.model, prompt, client_version: config.clientVersion || '0.7.0', page_origin: new URL(input.pageUrl).origin }),
+      signal: controller.signal, credentials: 'omit', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer',
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      const hints = { 400: '题目、模型或商品规则不匹配，请核对输入预算与模型授权', 401: '官方服务授权已失效，请重新兑换卡密', 403: '卡密已停用、到期、额度不足或触发商品规则', 409: '该请求已受理，禁止重复调用；请先查看调用记录', 429: '官方服务调用过于频繁，请稍后重试', 502: '调用结果或费用待核对，请联系发卡方，未自动重试' };
+      throw apiError(hints[response.status] || '官方服务不可用，请联系发卡方', 'API_OFFICIAL');
+    }
+    let text = ''; await readBody(response, chunk => { text += chunk; }, controller.signal);
+    let data; try { data = JSON.parse(text); } catch { throw apiError('官方服务返回格式无效', 'API_OFFICIAL'); }
+    if (typeof data?.content !== 'string') throw apiError('官方服务未返回可验证答案', 'API_OFFICIAL');
+    const content = data.content.trim().replace(/^<think>[\s\S]*?<\/think>\s*/i, '');
+    return { answer: parseAnswer(content, input) };
+  } catch (error) {
+    if (error.code?.startsWith('API_')) throw error;
+    if (controller.signal.aborted) throw apiError('官方服务等待已停止，服务端可能仍在结算，请先核对记录；未自动重试', 'API_OFFICIAL');
+    throw apiError('官方服务连接或答案校验失败，未填写网页；请核对调用记录', 'API_OFFICIAL');
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }

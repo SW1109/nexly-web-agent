@@ -1,5 +1,6 @@
 // 公开入口集中维护；仓库名与历史 Native Host 标识保留，避免品牌更新破坏已有安装。
 export const PROJECT = Object.freeze({
+  officialService: 'https://xianyu.guangnian.xin',
   repository: 'https://github.com/SW1109/nexly-web-agent',
   bugs: 'https://github.com/SW1109/nexly-web-agent/issues/new?template=bug_report.yml',
   feedback: 'https://github.com/SW1109/nexly-web-agent/issues',

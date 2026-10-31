@@ -1,4 +1,5 @@
-import { CLI_PROGRESS_LABELS } from './lib/contracts.js';
+import { createLicenseForm } from './lib/license-form.js';
+import { CLI_PROGRESS_LABELS, PRACTICE_BATCH } from './lib/contracts.js';
 import { PROJECT, DATA_CONSENT_VERSION } from './lib/project-info.js';
 import { DEFAULT_PACING, PACING_FIELDS, validatePacing } from './lib/pacing.js';
 import { DEFAULT_APPEARANCE, DEFAULT_POSITION, OPACITY, validateAppearance } from './lib/appearance.js';
@@ -8,6 +9,8 @@ import { createTaskLog } from './lib/panel-log.js';
 import { createCoursePanel } from './lib/course-panel.js';
 import { createPanelLayout } from './lib/panel-layout.js';
 const $ = (id) => document.getElementById(id);
+// 输入边界与后台保持一致，读取存储后再优先回显用户已保存的有效题数。
+$('count').min = PRACTICE_BATCH.minimum; $('count').max = PRACTICE_BATCH.maximum; $('count').value = PRACTICE_BATCH.defaultCount;
 const renderLog = createTaskLog({ list: $('log'), count: $('log-count'), jump: $('log-latest') });
 for (const link of document.querySelectorAll('[data-project-link]')) link.href = PROJECT[link.dataset.projectLink];
 let dataUseAccepted = false;
@@ -43,7 +46,7 @@ function showAppearance(appearance) {
   $('opacity-hint').textContent = `默认 ${OPACITY.defaultValue}%；可调 ${OPACITY.min}～${OPACITY.max}%。数值越低越透明，图标与展开后的整个页内面板共用此透明度。`;
 }
 function updateSummary() {
-  $('provider-summary').textContent = $('connection-mode').value === 'api' ? `API · ${apiForm.summary}` : names[$('provider').value];
+  $('provider-summary').textContent = $('connection-mode').value === 'official' ? '官方服务 · 卡密额度' : $('connection-mode').value === 'api' ? `API · ${apiForm.summary}` : names[$('provider').value];
   $('task-summary').textContent = currentState?.question?.assignment?.draftOnly ? '单份草稿 · 不自动提交' : currentState?.pageQuestions?.keys.length > 1 ? `当前页 ${currentState.pageQuestions.keys.length} 题` : `每批 ${$('count').value} 题`;
 }
 function validateInput(input, message) {
@@ -73,7 +76,7 @@ async function saveSettings() {
     validateInput(input, input.value === '' ? `请输入${field.label}` : `${field.label}应为 ${field.min}～${field.max} 的整数`);
     raw[input.dataset.pacing] = Number(input.value);
   }
-  validateInput($('count'), '每批题数应为 1～100 的整数');
+  validateInput($('count'), `每批题数应为 ${PRACTICE_BATCH.minimum}～${PRACTICE_BATCH.maximum} 的整数`);
   const pacing = validatePacing(raw), provider = $('provider').value, count = Number($('count').value), run = $('run-after-fill').checked, runInBackground = $('background-run').checked;
   const controlsAppearance = validateAppearance({ opacity: Number($('controls-opacity').value) });
   const autoControls = $('auto-controls').checked;
@@ -201,23 +204,23 @@ async function refreshHealth() {
   const epoch = ++healthEpoch, mode = $('connection-mode').value;
   healthChecking = true;
   if (currentState) render(currentState);
-  $('connection-status').textContent = mode === 'api' ? '正在检查 API 配置…' : '正在检测本地桥…';
+  $('connection-status').textContent = mode === 'official' ? '正在核对官方服务权益…' : mode === 'api' ? '正在检查 API 配置…' : '正在检测本地桥…';
   try {
     const health = await command('health', { connectionMode: mode });
     if (epoch !== healthEpoch || mode !== $('connection-mode').value) return;
-    connection = mode === 'api' && !health.ready ? null : health;
+    connection = mode !== 'local' && !health.ready ? null : health;
     if (mode === 'local') {
       nativeBridgeFailed = false;
       if (currentState && isNativeError(currentState.error)) currentState = { ...currentState, error: '' };
       if (isNativeError($('error').textContent)) showError('');
     }
-    $('connection-status').textContent = mode === 'api' ? health.ready ? 'API 已配置 · 未测试生成' : health.locked ? 'API 密钥已锁定 · 请在设置解锁' : '请先配置 API 地址、密钥和模型' : '本地桥已连接';
-    $('connection-status').title = mode === 'api' ? '配置就绪不代表账号、额度或模型已可用' : `Node ${health.nodeVersion}`;
+    $('connection-status').textContent = mode === 'official' ? (health.ready ? '官方服务已授权 · 调用时核对额度' : '官方服务额度不足或仍有未决预占') : mode === 'api' ? health.ready ? 'API 已配置 · 未测试生成' : health.locked ? 'API 密钥已锁定 · 请在设置解锁' : '请先配置 API 地址、密钥和模型' : '本地桥已连接';
+    $('connection-status').title = mode !== 'local' ? '配置就绪不代表账号、额度或模型已可用' : `Node ${health.nodeVersion}`;
     $('connection-status').className = connection ? 'status ok' : 'status bad'; $('setup-help').hidden = true;
   } catch (error) {
     if (epoch !== healthEpoch || mode !== $('connection-mode').value) return;
     connection = null; if (mode === 'local') nativeBridgeFailed = true;
-    $('connection-status').textContent = mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode === 'api';
+    $('connection-status').textContent = mode === 'official' ? '官方服务未就绪 · 请兑换并核对' : mode === 'api' ? 'API 配置暂不可用' : '本地桥未连接'; $('connection-status').className = 'status bad'; $('setup-help').hidden = mode !== 'local';
     if (currentState) currentState = { ...currentState, error: error.message };
     showError(error.message);
   } finally {
@@ -251,8 +254,9 @@ async function perform(action, data = {}, configured = false) {
 }
 function showConnectionMode() {
   const api = $('connection-mode').value === 'api';
-  $('local-settings').hidden = api; $('api-settings').hidden = !api; $('refresh').hidden = api;
-  $('native-recovery').hidden = api || !nativeBridgeFailed;
+  const official = $('connection-mode').value === 'official';
+  $('local-settings').hidden = api || official; $('api-settings').hidden = !api; $('official-settings').hidden = !official; $('refresh').hidden = api;
+  $('native-recovery').hidden = api || official || !nativeBridgeFailed;
   updateSummary();
 }
 $('connection-mode').addEventListener('change', () => { connection = null; showError(''); if (currentState) render({ ...currentState, error: '' }); showConnectionMode(); void refreshHealth(); });
@@ -298,10 +302,14 @@ $('reset-position').addEventListener('click', async () => {
   catch (error) { $('position-status').textContent = `位置未保存：${error.message}`; }
   finally { if (currentState) render(currentState); else $('reset-position').disabled = false; }
 });
-for (const input of $('settings-view').querySelectorAll('input,select')) input.addEventListener('input', () => {
-  input.setCustomValidity(''); input.removeAttribute('aria-invalid'); settingsDirty = true;
-  settingsStatus('有未保存的更改；保存或返回练习时生效。');
-});
+for (const input of $('settings-view').querySelectorAll('input,select')) {
+  // 授权表单由独立兑换流程保存，输入卡密不能触发模型配置的离页保存。
+  if (input.closest('#settings-license')) continue;
+  input.addEventListener('input', () => {
+    input.setCustomValidity(''); input.removeAttribute('aria-invalid'); settingsDirty = true;
+    settingsStatus('有未保存的更改；保存或返回练习时生效。');
+  });
+}
 $('pause').addEventListener('click', () => perform(currentState?.paused ? 'resume' : 'pause'));
 $('stop').addEventListener('click', () => perform('stop'));
 $('permission').addEventListener('click', () => perform('read'));
@@ -350,10 +358,10 @@ try {
   showDataUse((await chrome.storage.local.get('dataConsentVersion')).dataConsentVersion === DATA_CONSENT_VERSION);
   const { provider, count, runAfterFill, pacing, runInBackground, controlsAppearance, autoControls, connectionMode } = await chrome.storage.local.get(['provider', 'count', 'runAfterFill', 'pacing', 'runInBackground', 'controlsAppearance', 'autoControls', 'connectionMode']);
   if (names[provider]) $('provider').value = provider;
-  $('connection-mode').value = connectionMode === 'api' ? 'api' : 'local';
+  $('connection-mode').value = ['api', 'official'].includes(connectionMode) ? connectionMode : 'local';
   try { await apiForm.load(); } catch (error) { settingsStatus(error.message, true); }
   showConnectionMode();
-  if (Number.isInteger(count) && count >= 1 && count <= 100) $('count').value = count;
+  if (Number.isInteger(count) && count >= PRACTICE_BATCH.minimum && count <= PRACTICE_BATCH.maximum) $('count').value = count;
   $('run-after-fill').checked = runAfterFill === true;
   $('background-run').checked = runInBackground !== false;
   $('auto-controls').checked = autoControls !== false;
@@ -368,3 +376,7 @@ try {
   await refreshHealth();
   if (pacingError) showError(pacingError);
 } catch (error) { showError(error.message); }
+
+// 卡密入口只读取本机缓存；未点击兑换或核对前，不联网访问发卡服务。
+const licenseForm = createLicenseForm({ command });
+void licenseForm.load();

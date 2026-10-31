@@ -1305,3 +1305,8 @@ body[data-view="settings"]:not([data-settings-category="connection"]) :is(#nativ
   .course-overview .button-row { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
   #course-start { grid-column: 1 / -1; }
 }
+
+/* 可选授权卡片沿用现有设置页面层级，状态不靠颜色独立表达。 */
+.license-rights{margin:16px 0;padding:16px;background:#f8fafc;border:1px solid #dbe3ed;border-radius:10px;overflow-wrap:anywhere}
+.license-rights p{margin:8px 0 0}
+#license-status[data-error="true"]{color:#b91c1c}

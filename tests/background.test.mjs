@@ -60,10 +60,10 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
   const answer = (request, overrides = {}) => messages.emit({ requestId: request.requestId, type: 'result', data: { answer: { ...correct, questionId: request.question.questionId, ...overrides } } });
 
   assert.equal((await command('start', { provider: 'gemini', fill: 'false' })).ok, false);
-  for (const count of [0, 101, 1.5]) {
+  for (const count of [0, 201, 1.5]) {
     const rejected = await command('start', { provider: 'gemini', count });
     assert.equal(rejected.ok, false);
-    assert.match(rejected.error, /1～100/);
+    assert.match(rejected.error, /1～200/);
   }
   assert.equal(outbound.length, 0);
   // 商店首次安装或侧栏常驻后切换站点：url 被隐藏，不代表用户没有打开练习页。
@@ -501,7 +501,7 @@ test('background workflow uses JSON-safe Gemini injections and verifies freshnes
 
   // 新上限必须在后台也接受，不能只放宽面板输入框。
   offset = outbound.length;
-  assert.equal((await command('start', { provider: 'gemini', count: 100 })).ok, true);
+  assert.equal((await command('start', { provider: 'gemini', count: 200 })).ok, true);
   await nextSolve(offset);
   await command('stop');
 });

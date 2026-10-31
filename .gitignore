@@ -16,3 +16,6 @@ dist/
 coverage/
 test-results/
 playwright-report/
+
+# 本地导出文档和预览产物，不随源代码提交
+output/

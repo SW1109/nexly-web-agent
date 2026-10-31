@@ -3,7 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuizMate · 智答伴侣</title><link rel="stylesheet" href="panel.css"></head>
 <body>
 <header class="header">
-  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.6.2</span></h1><p>学习与练习，一处掌控</p></div></div>
+  <div class="brand"><img class="brand-logo" src="icons/logo.png" alt=""><div><h1>QuizMate <span class="version">0.7.0</span></h1><p>学习与练习，一处掌控</p></div></div>
   <button id="open-settings" class="settings-button" type="button" aria-controls="settings-view" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="white"/><circle cx="15" cy="17" r="3" fill="white"/></svg>设置</button>
 </header>
 <div class="connection-strip"><p id="connection-status" class="status" role="status">正在检查模型配置…</p><span id="provider-summary" class="caption">Codex CLI</span></div>
@@ -109,18 +109,20 @@
     <button id="setting-course" type="button" role="tab" aria-selected="false" aria-controls="settings-course" tabindex="-1" data-settings-tab="course">课程播放</button>
     <button id="setting-practice" type="button" role="tab" aria-selected="false" aria-controls="settings-practice" tabindex="-1" data-settings-tab="practice">练习策略</button>
     <button id="setting-controls" type="button" role="tab" aria-selected="false" aria-controls="settings-controls" tabindex="-1" data-settings-tab="controls">页内组件</button>
+    <button id="setting-license" type="button" role="tab" aria-selected="false" aria-controls="settings-license" tabindex="-1" data-settings-tab="license">官方服务卡密</button>
     <button id="setting-about" type="button" role="tab" aria-selected="false" aria-controls="settings-about" tabindex="-1" data-settings-tab="about">隐私与帮助</button>
   </nav><div class="settings-content">
   <div id="settings-connection" data-settings-panel="connection" role="tabpanel" aria-labelledby="setting-connection">
   <section class="section" aria-labelledby="connection-title">
     <div class="section-heading"><h2 id="connection-title">模型连接</h2><button id="refresh" class="quiet" type="button">刷新连接</button></div>
-    <label for="connection-mode">使用方式</label><select id="connection-mode"><option value="local">本地模式 · 使用已安装的 CLI</option><option value="api">API 模式 · 无需 CLI 或本地桥</option></select>
+    <label for="connection-mode">使用方式</label><select id="connection-mode"><option value="local">本地模式 · 使用已安装的 CLI</option><option value="api">API 模式 · 无需 CLI 或本地桥</option><option value="official">官方服务 · 使用卡密额度</option></select>
     <div id="local-settings" class="connection-fields">
       <label for="provider">使用哪个 CLI</label><select id="provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="gemini">Gemini CLI</option><option value="qwen">Qwen Code · 通义千问</option><option value="kimi">Kimi CLI · 月之暗面</option></select>
       <p id="provider-detail" class="muted">使用 CLI 现有登录和配置，无需在插件填写 API Key。国产模型也可通过已配置兼容服务的 Claude Code / Codex 使用。</p><p id="config-detail" class="caption"></p>
       <a class="bridge-setup-link" href="native-setup.html" target="_blank" rel="noopener noreferrer">设置 / 修复本地桥 →</a>
       <div id="setup-help" class="notice" hidden><strong>先安装或修复本地桥</strong><p>点击上方“设置 / 修复本地桥”，自动获取当前浏览器与扩展 ID 对应的命令。运行后点击“刷新连接”。API 模式无需此步骤。</p></div>
     </div>
+    <div id="official-settings" class="connection-fields" hidden><p class="muted">使用卡密授权后台代调模型，无需配置上游 APIKey。请在“官方服务卡密”中兑换并核对权益。</p><p class="caption">调用按商品套餐计次或计费；异常结果可能保留预占，请先联系发卡方核对，避免重复消耗。</p></div>
     <div id="api-settings" class="connection-fields" hidden>
       <p class="muted">支持厂商官方 API 和中转站的 OpenAI 兼容接口。配置仅存当前浏览器，不做云端同步；求解时题目仍会发送到所选服务商，请确认可信并获得页面使用许可。</p>
       <aside class="api-promotion" aria-label="推广服务"><span class="caption">推广</span><div><strong>需要中转服务？</strong><a href="https://nexly.guangnian.xin/" target="_blank" rel="noopener noreferrer">nexly.guangnian.xin ↗</a><p class="caption">可选中转服务，费用与隐私以该站规则为准；仅点击打开，不自动配置或传输题目。</p></div></aside>
@@ -141,10 +143,23 @@
       <p class="caption">连接测试只发送固定测试题，不读取当前网页；会产生少量用量。失败、超时或取消后不自动重试。</p><p id="api-status" class="caption" role="status" aria-live="polite">填写并保存后即可使用。</p>
     </div>
   </section>
+  </div><div id="settings-license" data-settings-panel="license" role="tabpanel" aria-labelledby="setting-license" hidden>
+  <section class="section" aria-labelledby="license-heading">
+    <h2 id="license-heading">官方服务卡密 <span class="caption">可选</span></h2>
+    <p class="muted">本地 CLI 和自配 API 无需购买卡密。这里用于兑换官方服务权益，不会修改你已配置的模型连接。</p>
+    <aside class="notice"><strong>官方服务 · 按套餐使用</strong><p>选择“官方服务”后，按商品配置的次数、金额和有效期调用。上游 APIKey 仅保存在发卡服务端；题目会经授权后台转发至其配置的模型服务。</p></aside>
+    <div class="field"><label for="license-server">授权服务地址 <span class="required">必填</span></label><input id="license-server" type="url" required value="https://xianyu.guangnian.xin" placeholder="https://xianyu.guangnian.xin" autocomplete="url" spellcheck="false" aria-describedby="license-server-hint"><p id="license-server-hint" class="caption">默认使用当前官方后台，可改为发卡方提供的后台根地址，与模型调用地址分开。公网须 HTTPS；本机测试可用 http://127.0.0.1:59188。仅点击兑换后申请该站点权限。</p></div>
+    <div class="field"><label for="license-code">卡密 <span class="required">必填</span></label><input id="license-code" type="password" required maxlength="80" placeholder="请输入 QM 开头的完整卡密" autocomplete="off" spellcheck="false" aria-describedby="license-code-hint"><p id="license-code-hint" class="caption">支持有效期卡、额度＋有效期卡、纯额度卡。各张卡独立核算；重复兑换不会重置权益。每张卡绑定一个安装实例，换机需联系管理员解绑。</p></div>
+    <button id="license-redeem" type="button" class="primary wide">兑换卡密</button>
+    <div id="license-rights" class="license-rights" hidden><strong id="license-name"></strong><p id="license-kind" class="caption"></p><p id="license-quota"></p><p id="license-expiry"></p><p id="license-checked" class="caption"></p></div>
+    <div class="field"><label for="license-model">官方服务模型</label><select id="license-model"><option value="">核对服务后自动选择默认模型</option></select><p id="license-service-usage" class="caption"></p></div>
+    <div class="button-row"><button id="license-service-check" type="button" class="secondary">核对模型与额度</button><button id="license-refresh" type="button" class="secondary" disabled>重新核对权益</button><button id="license-logout" type="button" class="quiet" disabled>退出授权</button></div>
+    <p id="license-status" class="caption" role="status" aria-live="polite">兑换后会保存本安装的可撤销授权会话，不保存原始卡密、不做云同步，也不会把凭据发送给题目网页。</p>
+  </section>
   </div><div id="settings-practice" data-settings-panel="practice" role="tabpanel" aria-labelledby="setting-practice" hidden>
   <section class="section" aria-labelledby="batch-title">
     <h2 id="batch-title">连续作答</h2>
-    <div class="inline-field"><label for="count">每批题数 <span class="caption">1～100 题</span></label><input id="count" type="number" min="1" max="100" step="1" value="20" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">默认 20 题。普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
+    <div class="inline-field"><label for="count">每批题数 <span class="caption">1～200 题</span></label><input id="count" type="number" min="1" max="200" step="1" value="100" required aria-describedby="count-hint"></div><p id="count-hint" class="caption">默认 100 题。普通题自动寻找换题入口；编程题等待你提交并手动换题，再开始下一批。</p>
     <label class="checkbox"><input id="background-run" type="checkbox" checked><span>切换标签后继续作答<small>继续操作启动任务时的练习页</small></span></label>
     <label class="checkbox"><input id="run-after-fill" type="checkbox"><span>编程题填写后执行页面样例<small>失败时将本次日志交给 AI，最多自动修正 2 次；仅执行样例，提交仍由你操作</small></span></label>
   </section>
@@ -184,7 +199,7 @@
     <p class="caption">QuizMate 为社区项目，与浏览器厂商、题目平台和模型服务商无隶属关系。赞助自愿，不解锁功能。</p>
   </section>
   </div></div></div>
-  <div class="settings-footer"><p id="settings-status" class="caption" role="status">任务配置在下一次任务生效。</p><button id="save-settings" class="primary wide" type="button">保存设置</button></div>
+  <div id="settings-footer" class="settings-footer"><p id="settings-status" class="caption" role="status">任务配置在下一次任务生效。</p><button id="save-settings" class="primary wide" type="button">保存设置</button></div>
 </div>
 </main>
 <footer class="app-footer"><span>QuizMate · 学习辅助，不代替判断</span><div><a href="help.html" target="_blank" rel="noopener noreferrer">手册</a><a data-project-link="bugs" target="_blank" rel="noopener noreferrer">反馈</a><a href="help.html#support" target="_blank" rel="noopener noreferrer">赞助</a></div></footer>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QuizMate · 智答伴侣",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "AI 练习与网课学习助手：支持本地 CLI/API、课程识别、正常播放与随堂练习预览填写，不自动提交。",
   "minimum_chrome_version": "120",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApVxRvAkrpStmrYKCDhlha1fs+eNjuTK91ccYte/lItovpzynZiwoKHnNtMIw/rnlxTBYT0z4SX/dZo9txqlAywoGaGqDq0fQA505DplbU0hhIKFOXEHyGOS7af/qYE79ZFmFJZa+/NfTC/SYyFcQzzfcCsvpwU+8ZMN3VEuvZNlmiWftGmf4KZ50bonH//MIbdeaTsRH7LfGbN8WeihLCuQfqrzYy6FUacHaebtr3EsbiGPM3iXzbdxrtoC9+UVrAOgo4bT8ucboGjVzfZK3wxQ+HengFGgVOrWgGCSYLF4gMIVOgtFEZUYtoIXDP7M3pdWJEhB600Kjsc+dAwSN1QIDAQAB",

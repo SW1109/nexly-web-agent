@@ -1,10 +1,10 @@
-export const CONNECTION_MODES = ['local', 'api'];
+export const CONNECTION_MODES = ['local', 'api', 'official'];
 export const API_PROTOCOLS = ['auto', 'chat', 'responses'];
 export const API_TIMEOUT = Object.freeze({ min: 10, max: 600, defaultValue: 180 });
 export const DEFAULT_API_CONFIG = Object.freeze({ baseUrl: '', protocol: 'auto', model: '', timeoutSeconds: API_TIMEOUT.defaultValue });
 
 export function connectionMode(value = 'local') {
-  if (!CONNECTION_MODES.includes(value)) throw new Error('请选择本地模式或 API 模式');
+  if (!CONNECTION_MODES.includes(value)) throw new Error('请选择本地、API 或官方服务模式');
   return value;
 }
 export function apiEndpoints(value, protocol = 'auto') {

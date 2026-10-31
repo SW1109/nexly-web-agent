@@ -118,14 +118,14 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
     await t.test(`#${button} grants the main site and cross-origin practice frame before ${action}`, async () => {
       const { context, panel, practice, errors } = await openPanel();
       try {
-        assert.equal(await panel.locator('#count').inputValue(), '20');
-        assert.equal(await panel.locator('#count').getAttribute('max'), '100');
-        assert.equal(await panel.locator('#task-summary').textContent(), '每批 20 题');
+        assert.equal(await panel.locator('#count').inputValue(), '100');
+        assert.equal(await panel.locator('#count').getAttribute('max'), '200');
+        assert.equal(await panel.locator('#task-summary').textContent(), '每批 100 题');
         assert.equal(await panel.locator('#auto-controls').isChecked(), true);
         if (button === 'auto') {
           await panel.locator('#open-settings').click();
           await panel.locator('#setting-practice').click();
-          await panel.locator('#count').fill('100');
+          await panel.locator('#count').fill('200');
           await panel.locator('#close-settings').click();
         }
         await panel.locator('#' + button).click();
@@ -135,7 +135,7 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
         assert.ok(events.some(event => event.kind === 'getFrame' && event.details.tabId === 7 && event.details.frameId === 0), 'a missing tabs.query URL must recover from the top frame');
         assert.ok(events.findIndex(event => event.kind === 'permission') < events.findIndex(event => event.kind === 'command' && event.action === action), 'permission must be granted before the practice command');
         assert.equal(commands.filter(command => command.action === action).length, 1);
-        if (button === 'auto') assert.equal(commands.find(command => command.action === 'start').count, 100);
+        if (button === 'auto') assert.equal(commands.find(command => command.action === 'start').count, 200);
         assert.equal(result.question.type, 'judge');
         assert.equal(result.question.options.length, 2);
         assert.deepEqual(result.question.options.map(option => option.text), ['正确(True)', '错误(False)']);
@@ -177,18 +177,18 @@ test('panel recovers missing tab URLs, requests site access from clicks and read
     });
   }
 
-  await t.test('a saved 100-question batch is restored and manual control preferences are retained', async () => {
-    const { context, panel } = await openPanel(false, { count: 100, autoControls: false });
+  for (const savedCount of [20, 200]) await t.test(`a saved ${savedCount}-question batch is restored and manual control preferences are retained`, async () => {
+    const { context, panel } = await openPanel(false, { count: savedCount, autoControls: false });
     try {
-      assert.equal(await panel.locator('#count').inputValue(), '100');
-      assert.equal(await panel.locator('#task-summary').textContent(), '每批 100 题');
+      assert.equal(await panel.locator('#count').inputValue(), String(savedCount));
+      assert.equal(await panel.locator('#task-summary').textContent(), `每批 ${savedCount} 题`);
       assert.equal(await panel.locator('#auto-controls').isChecked(), false);
       await panel.locator('#open-settings').click();
       await panel.locator('#setting-practice').click();
-      await panel.locator('#count').fill('101');
+      await panel.locator('#count').fill('201');
       await panel.locator('#save-settings').click();
       await panel.waitForFunction(() => document.getElementById('count').getAttribute('aria-invalid') === 'true');
-      assert.match(await panel.locator('#settings-status').textContent(), /1～100/);
+      assert.match(await panel.locator('#settings-status').textContent(), /1～200/);
       assert.equal(await panel.evaluate(() => window.__commands.some(command => command.action === 'start')), false);
     } finally { await context.close(); }
   });

@@ -1,3 +1,4 @@
+import { getLicenseClient } from './license-client.js';
 import { requireDataConsent } from './project-info.js';
 import { nativeRequest, cancelNative } from './native.js';
 import { apiSettings, apiCredentials } from './api-settings.js';
@@ -12,6 +13,7 @@ async function authorizedCredentials(rawConfig, key, options) {
 }
 export async function solverHealth(mode = 'local') {
   if (connectionMode(mode) === 'local') return { ...await nativeRequest('health').promise, mode: 'local' };
+  if (mode === 'official') return { mode: 'official', ...await getLicenseClient().service() };
   const settings = await apiSettings();
   return { mode: 'api', ready: settings.hasKey && Boolean(settings.config.model), ...settings };
 }
@@ -23,6 +25,11 @@ export async function prepareSolver(prefs) {
       return { ...request, cancel: () => cancelNative(request.requestId).catch(() => {}) };
     }, release() {}
   };
+  if (prefs.connectionMode === 'official') {
+    const credentials = await getLicenseClient().credentials();
+    const release = await apiRuntime().hold();
+    return { solve: (question, onProgress) => apiRuntime().request('official', credentials, question, onProgress), release, model: credentials.config.model };
+  }
   const settings = await apiSettings();
   const credentials = await authorizedCredentials(settings.config);
   const release = await apiRuntime().hold();

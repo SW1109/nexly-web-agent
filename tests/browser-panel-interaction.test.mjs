@@ -67,6 +67,7 @@ test('panel keeps reading cancelable, recovers failures and preserves settings d
               if (message.action === 'scan') Object.assign(course, { phase: 'ready', platformId: 'ouchn', tabId: 7, snapshot: { title: '模拟国开课程', chapters: [], questions: [], gate: '', media: { count: 1, duration: 20, currentTime: 0, rate: 1 } } });
               return { ok: true, data: course };
             }
+            if (message.action === 'licenseSettings') return { ok: true, data: { server: '', license: null, checkedAt: 0 } };
             if (message.action === 'apiSettings') return { ok: true, data: { config: { baseUrl: '', protocol: 'auto', model: '', timeoutSeconds: 180 }, hasKey: false, rememberKey: false } };
             if (message.action === 'state') return { ok: true, data: structuredClone(f.state) };
             if (message.action === 'health') return f.healthMode === 'deferred' ? deferred('health') : f.healthMode === 'failed' ? { ok: false, error: f.nativeError } : structuredClone(f.healthReply);
@@ -249,6 +250,22 @@ test('panel keeps reading cancelable, recovers failures and preserves settings d
     assert.deepEqual(await page.evaluate(() => window.__panelFixture.writes), [], 'leaving during a task preserves drafts without saving them');
   });
 
+  await t.test('optional license fields are separate from model settings and do not trigger a save on leaving', async subtest => {
+    const page = await openPanel(subtest);
+    await page.locator('#open-settings').click();
+    await page.locator('#setting-license').click();
+    assert.equal(await page.locator('#settings-footer').isHidden(), true);
+    assert.equal(await page.locator('#license-server').inputValue(), 'https://xianyu.guangnian.xin');
+    await page.locator('#license-server').fill('https://licenses.example.test');
+    await page.locator('#license-code').fill('QM-PRIVATE');
+    await page.locator('#close-settings').click();
+    assert.equal(await page.locator('#settings-view').isHidden(), true);
+    assert.deepEqual(await page.evaluate(() => window.__panelFixture.writes), []);
+    await page.locator('#open-settings').click();
+    await page.locator('#setting-connection').click();
+    assert.equal(await page.locator('#settings-footer').isVisible(), true);
+  });
+
   for (const colorScheme of ['light', 'dark']) {
     await t.test(`320px ${colorScheme} task and settings views have no horizontal overflow`, async subtest => {
       const page = await openPanel(subtest, { colorScheme });
@@ -306,7 +323,7 @@ test('panel keeps reading cancelable, recovers failures and preserves settings d
     const page = await openPanel(subtest);
     await page.locator('#open-settings').click();
     await page.locator('#setting-practice').click();
-    await page.locator('#count').fill('101');
+    await page.locator('#count').fill('201');
     await page.locator('#setting-controls').click();
     await page.locator('#save-settings').click();
     await page.waitForFunction(() => document.getElementById('count').getAttribute('aria-invalid') === 'true');
@@ -329,6 +346,22 @@ test('panel keeps reading cancelable, recovers failures and preserves settings d
     assert.equal(await page.evaluate(() => window.__panelFixture.saved.courseSettings.playbackRate), 16);
     assert.equal(await page.evaluate(() => window.__panelFixture.saved.count), 31);
   });
+  await t.test('optional license fields are separate from model settings and do not trigger a save on leaving', async subtest => {
+    const page = await openPanel(subtest);
+    await page.locator('#open-settings').click();
+    await page.locator('#setting-license').click();
+    assert.equal(await page.locator('#settings-footer').isHidden(), true);
+    assert.equal(await page.locator('#license-server').inputValue(), 'https://xianyu.guangnian.xin');
+    await page.locator('#license-server').fill('https://licenses.example.test');
+    await page.locator('#license-code').fill('QM-PRIVATE');
+    await page.locator('#close-settings').click();
+    assert.equal(await page.locator('#settings-view').isHidden(), true);
+    assert.deepEqual(await page.evaluate(() => window.__panelFixture.writes), []);
+    await page.locator('#open-settings').click();
+    await page.locator('#setting-connection').click();
+    assert.equal(await page.locator('#settings-footer').isVisible(), true);
+  });
+
   for (const colorScheme of ['light', 'dark']) {
     await t.test(`all workspaces and settings categories stay inside 320/400/1280/1920px in ${colorScheme}`, async subtest => {
       const page = await openPanel(subtest, { view: 'home', colorScheme });
@@ -341,7 +374,7 @@ test('panel keeps reading cancelable, recovers failures and preserves settings d
           if (width === 320 || width === 1280) await page.screenshot({ path: resolve(artifacts, `workspace-${view}-${colorScheme}-${width}.png`), fullPage: true });
         }
         await page.locator('#open-settings').click();
-        for (const category of ['connection','course','practice','controls','about']) {
+        for (const category of ['connection','course','practice','controls','license','about']) {
           await page.locator('#setting-' + category).click();
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, category + '/' + width);
           if (width === 320 || width === 1280) await page.screenshot({ path: resolve(artifacts, `settings-${category}-${colorScheme}-${width}.png`), fullPage: true });
